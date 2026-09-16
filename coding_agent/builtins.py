@@ -15,6 +15,16 @@ class ReadFileArgs(BaseModel):
         description="Relative path to a UTF-8 text file in the workspace.",
     )
 
+class WriteFileArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    path: str = Field(
+        min_length=1,
+        description="Relative path to a UTF-8 text file in the workspace.",
+    )
+    content: str = Field(
+        description="Complete UTF-8 text content to write.",
+    )
 
 def resolve_workspace_path(
     workspace_root: Path,
@@ -62,4 +72,25 @@ def create_read_file_tool(workspace_root: Path) -> AgentTool:
         description="Read a UTF-8 text file inside the workspace.",
         args_model=ReadFileArgs,
         handler=read_file,
+    )
+
+def create_write_file_tool(workspace_root: Path) -> AgentTool:
+    root = Path(workspace_root).resolve(strict=True)
+
+    if not root.is_dir():
+        raise NotADirectoryError(f"workspace is not a directory: {root}")
+
+    def write_file(arguments: BaseModel) -> str:
+        if not isinstance(arguments, WriteFileArgs):
+            raise TypeError("write_file received unexpected arguments")
+
+        path = resolve_workspace_path(root, arguments.path)
+        path.write_text(arguments.content, encoding="utf-8")
+        return f"wrote file: {arguments.path}"
+
+    return AgentTool.from_handler(
+        name="write_file",
+        description="Write a UTF-8 text file inside the workspace.",
+        args_model=WriteFileArgs,
+        handler=write_file,
     )
