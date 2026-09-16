@@ -26,6 +26,14 @@ class WriteFileArgs(BaseModel):
         description="Complete UTF-8 text content to write.",
     )
 
+class ListDirArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    path: str = Field(
+        min_length=1,
+        description="Relative path to a directory in the workspace.",
+    )
+
 def resolve_workspace_path(
     workspace_root: Path,
     requested_path: str,
@@ -93,4 +101,31 @@ def create_write_file_tool(workspace_root: Path) -> AgentTool:
         description="Write a UTF-8 text file inside the workspace.",
         args_model=WriteFileArgs,
         handler=write_file,
+    )
+
+def create_list_dir_tool(workspace_root: Path) -> AgentTool:
+    root = Path(workspace_root).resolve(strict=True)
+
+    if not root.is_dir():
+        raise NotADirectoryError(f"workspace is not a directory: {root}")
+
+    def list_dir(arguments: BaseModel) -> str:
+        if not isinstance(arguments, ListDirArgs):
+            raise TypeError("list_dir received unexpected arguments")
+
+        path = resolve_workspace_path(root, arguments.path)
+        entries = sorted(path.iterdir(), key=lambda entry: entry.name)
+        return "\n".join(
+            f"{'dir' if entry.is_dir() else 'file'}: {entry.name}"
+            for entry in entries
+        )
+
+    return AgentTool.from_handler(
+        name="list_dir",
+        description=(
+            "List immediate files and directories inside a workspace "
+            "directory."
+        ),
+        args_model=ListDirArgs,
+        handler=list_dir,
     )

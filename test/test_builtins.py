@@ -11,6 +11,7 @@ from coding_agent.builtins import (
     create_read_file_tool,
     resolve_workspace_path,
     create_write_file_tool,
+    create_list_dir_tool,
 )
 
 
@@ -34,6 +35,15 @@ def make_write_call(
         arguments_json=json.dumps(arguments),
     )
 
+def make_list_dir_call(
+    arguments: dict[str, object],
+    call_id: str = "call-1",
+) -> ToolCallPart:
+    return ToolCallPart(
+        id=call_id,
+        name="list_dir",
+        arguments_json=json.dumps(arguments),
+    )
 
 def make_registry(workspace: Path) -> ToolRegistry:
     registry = ToolRegistry()
@@ -43,6 +53,11 @@ def make_registry(workspace: Path) -> ToolRegistry:
 def make_write_registry(workspace: Path) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(create_write_file_tool(workspace))
+    return registry
+
+def make_list_dir_registry(workspace: Path) -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(create_list_dir_tool(workspace))
     return registry
 
 def test_resolver_accepts_relative_path_inside_workspace(
@@ -343,5 +358,163 @@ async def test_write_file_rejects_unknown_arguments(
     assert result.is_error is True
     assert result.tool_call_id == "call-1"
     assert result.tool_name == "write_file"
+    assert result.content.startswith("invalid_arguments:")
+    assert "unexpected" in result.content
+
+@pytest.mark.asyncio
+async def test_list_dir_returns_sorted_direct_entries(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "z.txt").write_text("z", encoding="utf-8")
+    (workspace / "notes").mkdir()
+    (workspace / "a.txt").write_text("a", encoding="utf-8")
+    registry = make_list_dir_registry(workspace)
+
+    result = await registry.execute(
+        make_list_dir_call({"path": "."})
+    )
+
+    assert result.is_error is False
+    assert result.tool_call_id == "call-1"
+    assert result.tool_name == "list_dir"
+    assert result.content == "file: a.txt\ndir: notes\nfile: z.txt"
+
+
+@pytest.mark.asyncio
+async def test_list_dir_lists_nested_directory(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    notes = workspace / "notes"
+    notes.mkdir(parents=True)
+    (notes / "todo.txt").write_text("write tests", encoding="utf-8")
+    registry = make_list_dir_registry(workspace)
+
+    result = await registry.execute(
+        make_list_dir_call({"path": "notes"})
+    )
+
+    assert result.is_error is False
+    assert result.content == "file: todo.txt"
+
+
+@pytest.mark.asyncio
+async def test_list_dir_missing_path_returns_tool_error(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    registry = make_list_dir_registry(workspace)
+
+    result = await registry.execute(
+        make_list_dir_call({"path": "missing"})
+    )
+
+    assert result.is_error is True
+    assert result.tool_name == "list_dir"
+    assert result.content.startswith("tool_execution_failed:")
+
+
+@pytest.mark.asyncio
+async def test_list_dir_rejects_file_path(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "message.txt").write_text("hello", encoding="utf-8")
+    registry = make_list_dir_registry(workspace)
+
+    result = await registry.execute(
+        make_list_dir_call({"path": "message.txt"})
+    )
+
+    assert result.is_error is True
+    assert result.tool_name == "list_dir"
+    assert result.content.startswith("tool_execution_failed:")
+
+
+@pytest.mark.asyncio
+async def test_list_dir_rejects_parent_segment(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    registry = make_list_dir_registry(workspace)
+
+    result = await registry.execute(
+        make_list_dir_call({"path": "../"})
+    )
+
+    assert result.is_error is True
+    assert result.tool_name == "list_dir"
+    assert result.content.startswith("tool_execution_failed:")
+
+
+@pytest.mark.asyncio
+async def test_list_dir_rejects_absolute_path(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    registry = make_list_dir_registry(workspace)
+
+    result = await registry.execute(
+        make_list_dir_call({"path": str(outside.resolve())})
+    )
+
+    assert result.is_error is True
+    assert result.tool_name == "list_dir"
+    assert result.content.startswith("tool_execution_failed:")
+
+
+@pytest.mark.asyncio
+async def test_list_dir_rejects_symlinked_directory(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = workspace / "linked"
+
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symbolic links are unavailable: {exc}")
+
+    registry = make_list_dir_registry(workspace)
+
+    result = await registry.execute(
+        make_list_dir_call({"path": "linked"})
+    )
+
+    assert result.is_error is True
+    assert result.tool_name == "list_dir"
+    assert result.content.startswith("tool_execution_failed:")
+
+
+@pytest.mark.asyncio
+async def test_list_dir_rejects_unknown_arguments(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    registry = make_list_dir_registry(workspace)
+
+    result = await registry.execute(
+        make_list_dir_call(
+            {
+                "path": ".",
+                "unexpected": True,
+            }
+        )
+    )
+
+    assert result.is_error is True
+    assert result.tool_name == "list_dir"
     assert result.content.startswith("invalid_arguments:")
     assert "unexpected" in result.content
