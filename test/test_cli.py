@@ -14,6 +14,7 @@ from ai.schemas import (
     ToolCallPart,
     ModelSpec,
     UserMessage,
+    ToolResultMessage,
 )
 from coding_agent.cli import CliConfig, main, parse_args
 from coding_agent.session import (
@@ -391,3 +392,92 @@ def test_main_loads_session_history_into_first_request(
     current_user = request.messages[-1]
     assert isinstance(current_user, UserMessage)
     assert current_user.content == "What should we do next?"
+
+
+def test_main_persists_run_messages_in_session_order(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_path = workspace / "history.jsonl"
+    provider = ScriptedProvider(
+        [
+            ChatResponse(
+                message=AssistantMessage(
+                    content=[
+                        ToolCallPart(
+                            id="call-1",
+                            name="write_file",
+                            arguments_json=(
+                                '{"path":"result.txt",'
+                                '"content":"hello"}'
+                            ),
+                        )
+                    ]
+                ),
+                finish_reason="tool_calls",
+            ),
+            ChatResponse(
+                message=AssistantMessage(
+                    content=[TextPart(text="Created result.txt.")],
+                ),
+                finish_reason="stop",
+            ),
+        ]
+    )
+
+    exit_code = main(
+        [
+            "Create result.txt.",
+            "--workspace",
+            str(workspace),
+            "--provider-id",
+            "scripted",
+            "--model",
+            "test-model",
+            "--session",
+            "history.jsonl",
+        ],
+        provider_factory=lambda _: provider,
+        output=StringIO(),
+    )
+
+    assert exit_code == 0
+
+    snapshot = JsonlSessionStore(session_path).load()
+
+    assert [
+        message.role
+        for message in snapshot.messages
+    ] == [
+        "user",
+        "assistant",
+        "tool_result",
+        "assistant",
+    ]
+
+    user_message = snapshot.messages[0]
+    assert isinstance(user_message, UserMessage)
+    assert user_message.content == "Create result.txt."
+
+    tool_call_message = snapshot.messages[1]
+    assert isinstance(tool_call_message, AssistantMessage)
+
+    tool_call = tool_call_message.content[0]
+    assert isinstance(tool_call, ToolCallPart)
+    assert tool_call.id == "call-1"
+    assert tool_call.name == "write_file"
+
+    tool_result = snapshot.messages[2]
+    assert isinstance(tool_result, ToolResultMessage)
+    assert tool_result.tool_call_id == "call-1"
+    assert tool_result.tool_name == "write_file"
+    assert tool_result.content == "wrote file: result.txt"
+    assert tool_result.is_error is False
+
+    final_message = snapshot.messages[3]
+    assert isinstance(final_message, AssistantMessage)
+
+    final_text = final_message.content[0]
+    assert isinstance(final_text, TextPart)
+    assert final_text.text == "Created result.txt."

@@ -180,6 +180,22 @@ def prepare_session(
     return store, []
 
 
+def handle_run_event(
+    event: AgentEvent,
+    output: TextIO,
+    session_store: JsonlSessionStore | None,
+) -> None:
+    print(render_event(event), file=output)
+
+    if session_store is None:
+        return
+
+    if isinstance(event, ModelResponded):
+        session_store.append_message(event.response.message)
+    elif isinstance(event, ToolFinished):
+        session_store.append_message(event.result)
+
+
 async def run_task(
     config: CliConfig,
     provider: LLMProvider,
@@ -189,7 +205,7 @@ async def run_task(
         provider=config.provider_id,
         id=config.model_id,
     )
-    _session_store, restored_messages = prepare_session(
+    session_store, restored_messages = prepare_session(
         config,
         model,
     )
@@ -211,10 +227,19 @@ async def run_task(
     )
     runner = AgentRunner(models)
 
+    user_message = UserMessage(content=config.task)
+
+    if session_store is not None:
+        session_store.append_message(user_message)
+
     result = await runner.run(
         state,
-        UserMessage(content=config.task),
-        on_event=lambda event: print(render_event(event), file=output),
+        user_message,
+        on_event=lambda event: handle_run_event(
+            event,
+            output,
+            session_store,
+        ),
     )
 
     if result.failure is not None:
