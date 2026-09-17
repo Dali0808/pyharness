@@ -9,6 +9,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO, TypeAlias
+from uuid import uuid4
 
 from agent.agent import AgentState
 from agent.events import (
@@ -25,11 +26,23 @@ from agent.loop import AgentRunner
 from agent.tools import ToolRegistry
 from ai.openai_compatible import OpenAICompatibleProvider
 from ai.provider import LLMProvider, ModelRegistry
-from ai.schemas import AssistantMessage, ModelSpec, TextPart, UserMessage
+from ai.schemas import (
+    AssistantMessage,
+    Message,
+    ModelSpec,
+    TextPart,
+    UserMessage,
+    utc_now,
+)
 from coding_agent.builtins import (
     create_list_dir_tool,
     create_read_file_tool,
     create_write_file_tool,
+    resolve_workspace_path,
+)
+from coding_agent.session import (
+    JsonlSessionStore,
+    SessionMetadata,
 )
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -48,6 +61,7 @@ class CliConfig:
     api_key_env: str
     system_prompt: str
     max_steps: int
+    session_path: Path | None = None
 
 
 ProviderFactory: TypeAlias = Callable[[CliConfig], LLMProvider]
@@ -62,6 +76,14 @@ def parse_args(argv: Sequence[str] | None = None) -> CliConfig:
         "--workspace",
         default=".",
         help="Workspace root. Defaults to the current directory.",
+    )
+    parser.add_argument(
+        "--session",
+        default=None,
+        help=(
+            "Relative path to a JSONL session file inside "
+            "the workspace."
+        ),
     )
     parser.add_argument(
         "--provider-id",
@@ -101,6 +123,17 @@ def parse_args(argv: Sequence[str] | None = None) -> CliConfig:
     if not workspace.is_dir():
         parser.error(f"workspace is not a directory: {workspace}")
 
+    session_path: Path | None = None
+
+    if arguments.session is not None:
+        try:
+            session_path = resolve_workspace_path(
+                workspace,
+                arguments.session,
+            )
+        except (OSError, ValueError) as exc:
+            parser.error(f"invalid session path: {exc}")
+
     return CliConfig(
         task=arguments.task,
         workspace=workspace,
@@ -110,6 +143,7 @@ def parse_args(argv: Sequence[str] | None = None) -> CliConfig:
         api_key_env=arguments.api_key_env,
         system_prompt=arguments.system_prompt,
         max_steps=arguments.max_steps,
+        session_path=session_path,
     )
 
 
@@ -121,6 +155,31 @@ def create_provider(config: CliConfig) -> OpenAICompatibleProvider:
     )
 
 
+def prepare_session(
+    config: CliConfig,
+    model: ModelSpec,
+) -> tuple[JsonlSessionStore | None, list[Message]]:
+    if config.session_path is None:
+        return None, []
+
+    store = JsonlSessionStore(config.session_path)
+
+    if config.session_path.exists():
+        snapshot = store.load()
+        return store, list(snapshot.messages)
+
+    metadata = SessionMetadata(
+        session_id=uuid4().hex,
+        created_at=utc_now(),
+        workspace=str(config.workspace),
+        system_prompt=config.system_prompt,
+        model=model,
+    )
+    store.create(metadata)
+
+    return store, []
+
+
 async def run_task(
     config: CliConfig,
     provider: LLMProvider,
@@ -130,6 +189,11 @@ async def run_task(
         provider=config.provider_id,
         id=config.model_id,
     )
+    _session_store, restored_messages = prepare_session(
+        config,
+        model,
+    )
+
     models = ModelRegistry()
     models.register(model, provider)
 
@@ -143,6 +207,7 @@ async def run_task(
         model=model,
         tools=tools,
         max_steps=config.max_steps,
+        messages=restored_messages,
     )
     runner = AgentRunner(models)
 
