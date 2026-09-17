@@ -481,3 +481,153 @@ def test_main_persists_run_messages_in_session_order(
     final_text = final_message.content[0]
     assert isinstance(final_text, TextPart)
     assert final_text.text == "Created result.txt."
+
+
+def test_main_resumes_and_extends_session_across_runs(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_path = workspace / "history.jsonl"
+
+    first_provider = ScriptedProvider(
+        [
+            ChatResponse(
+                message=AssistantMessage(
+                    content=[
+                        TextPart(
+                            text="The project uses Python."
+                        )
+                    ],
+                    provider="scripted",
+                    model="test-model",
+                ),
+                finish_reason="stop",
+            )
+        ]
+    )
+
+    first_exit_code = main(
+        [
+            "Inspect the project language.",
+            "--workspace",
+            str(workspace),
+            "--provider-id",
+            "scripted",
+            "--model",
+            "test-model",
+            "--session",
+            "history.jsonl",
+        ],
+        provider_factory=lambda _: first_provider,
+        output=StringIO(),
+    )
+
+    assert first_exit_code == 0
+    assert len(first_provider.requests) == 1
+    assert [
+        message.role
+        for message in first_provider.requests[0].messages
+    ] == ["user"]
+
+    first_snapshot = JsonlSessionStore(session_path).load()
+
+    assert [
+        message.role
+        for message in first_snapshot.messages
+    ] == [
+        "user",
+        "assistant",
+    ]
+
+    second_provider = ScriptedProvider(
+        [
+            ChatResponse(
+                message=AssistantMessage(
+                    content=[
+                        TextPart(
+                            text="Next, add more tests."
+                        )
+                    ],
+                    provider="scripted",
+                    model="test-model",
+                ),
+                finish_reason="stop",
+            )
+        ]
+    )
+
+    second_exit_code = main(
+        [
+            "What should we do next?",
+            "--workspace",
+            str(workspace),
+            "--provider-id",
+            "scripted",
+            "--model",
+            "test-model",
+            "--session",
+            "history.jsonl",
+        ],
+        provider_factory=lambda _: second_provider,
+        output=StringIO(),
+    )
+
+    assert second_exit_code == 0
+    assert len(second_provider.requests) == 1
+
+    second_request = second_provider.requests[0]
+
+    assert [
+        message.role
+        for message in second_request.messages
+    ] == [
+        "user",
+        "assistant",
+        "user",
+    ]
+
+    assert isinstance(second_request.messages[0], UserMessage)
+    assert (
+        second_request.messages[0].content
+        == "Inspect the project language."
+    )
+
+    assert isinstance(
+        second_request.messages[1],
+        AssistantMessage,
+    )
+    previous_text = second_request.messages[1].content[0]
+    assert isinstance(previous_text, TextPart)
+    assert previous_text.text == "The project uses Python."
+
+    assert isinstance(second_request.messages[2], UserMessage)
+    assert (
+        second_request.messages[2].content
+        == "What should we do next?"
+    )
+
+    final_snapshot = JsonlSessionStore(session_path).load()
+
+    assert [
+        message.role
+        for message in final_snapshot.messages
+    ] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+
+    first_session_id = first_snapshot.metadata.session_id
+    assert final_snapshot.metadata.session_id == first_session_id
+
+    final_contents = [
+        message.content
+        for message in final_snapshot.messages
+        if isinstance(message, UserMessage)
+    ]
+    assert final_contents == [
+        "Inspect the project language.",
+        "What should we do next?",
+    ]
