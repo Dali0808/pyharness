@@ -24,6 +24,7 @@ from coding_agent.compaction import (
     ModelSummaryGenerator,
     SUMMARY_SYSTEM_PROMPT,
     SummaryGenerationError,
+    CompactedContextManager,
 )
 
 class RecordingSummarizer:
@@ -439,4 +440,95 @@ async def test_model_summarizer_propagates_provider_error(
     ):
         await summarizer(
             [UserMessage(content="Old task.")]
+        )
+
+
+def test_compacted_context_selects_summary_and_uncompacted_tail(
+) -> None:
+    messages = [
+        UserMessage(content="First task."),
+        assistant_text("First answer."),
+        UserMessage(content="Second task."),
+        assistant_text("Second answer."),
+    ]
+    original = list(messages)
+    summary_message = UserMessage(
+        content=(
+            f"{COMPACTION_SUMMARY_PREFIX}\n"
+            "The first task was completed."
+        )
+    )
+    manager = CompactedContextManager(
+        summary_message=summary_message,
+        compacted_count=2,
+    )
+
+    selected = manager.select(messages)
+
+    assert selected == [
+        summary_message,
+        *messages[2:],
+    ]
+    assert messages == original
+    assert selected is not messages
+
+
+def test_compacted_context_includes_newly_appended_messages(
+) -> None:
+    messages = [
+        UserMessage(content="First task."),
+        assistant_text("First answer."),
+        UserMessage(content="Second task."),
+        assistant_text("Second answer."),
+    ]
+    summary_message = UserMessage(
+        content=(
+            f"{COMPACTION_SUMMARY_PREFIX}\n"
+            "The first task was completed."
+        )
+    )
+    manager = CompactedContextManager(
+        summary_message=summary_message,
+        compacted_count=2,
+    )
+
+    new_message = UserMessage(content="Third task.")
+    messages.append(new_message)
+
+    assert manager.select(messages) == [
+        summary_message,
+        *messages[2:],
+    ]
+    assert manager.select(messages)[-1] == new_message
+
+
+@pytest.mark.parametrize("compacted_count", [0, -1])
+def test_compacted_context_rejects_non_positive_count(
+    compacted_count: int,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="compacted_count must be positive",
+    ):
+        CompactedContextManager(
+            summary_message=UserMessage(
+                content="Summary"
+            ),
+            compacted_count=compacted_count,
+        )
+
+
+def test_compacted_context_rejects_shorter_complete_history(
+) -> None:
+    manager = CompactedContextManager(
+        summary_message=UserMessage(content="Summary"),
+        compacted_count=3,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="history is shorter than compacted_count",
+    ):
+        manager.select(
+            [UserMessage(content="Only message.")]
         )

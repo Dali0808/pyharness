@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from agent.context import ContextManager
 from ai.provider import ModelRegistry
 from ai.schemas import (
     ChatRequest,
@@ -91,6 +92,35 @@ class CompactionResult:
     messages: list[Message]
     compacted_count: int
 
+class CompactedContextManager(ContextManager):
+    def __init__(
+        self,
+        *,
+        summary_message: Message,
+        compacted_count: int,
+    ) -> None:
+        if compacted_count <= 0:
+            raise ValueError(
+                "compacted_count must be positive"
+            )
+
+        super().__init__()
+        self.summary_message = summary_message
+        self.compacted_count = compacted_count
+
+    def select(
+        self,
+        messages: Sequence[Message],
+    ) -> list[Message]:
+        if len(messages) < self.compacted_count:
+            raise ValueError(
+                "history is shorter than compacted_count"
+            )
+
+        return [
+            self.summary_message,
+            *messages[self.compacted_count :],
+        ]
 
 def partition_history(
     messages: Sequence[Message],
