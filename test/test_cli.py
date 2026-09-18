@@ -113,6 +113,7 @@ def test_main_runs_workspace_tool_task_and_renders_events(
     assert "step 1: tool finished: write_file" in rendered
     assert "run finished after 2 step(s)" in rendered
     assert "answer: Created greeting.txt." in rendered
+    assert "context compacted:" not in rendered
 
 
 def test_main_returns_nonzero_for_agent_failure(
@@ -757,6 +758,7 @@ def test_main_compacts_restored_history_before_agent_run(
         ]
     )
 
+    output = StringIO()
     exit_code = main(
         [
             "Complete the third task.",
@@ -774,10 +776,14 @@ def test_main_compacts_restored_history_before_agent_run(
             "history.jsonl",
         ],
         provider_factory=lambda _: provider,
-        output=StringIO(),
+        output=output,
     )
 
     assert exit_code == 0
+    assert (
+            "context compacted: summarized 2 messages"
+            in output.getvalue()
+    )
     assert len(provider.requests) == 2
 
     summary_request = provider.requests[0]

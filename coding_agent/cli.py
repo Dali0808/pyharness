@@ -71,6 +71,10 @@ class CliConfig:
     session_path: Path | None = None
     context_window: int | None = None
 
+@dataclass(frozen=True, slots=True)
+class PreparedContext:
+    context_manager: ContextManager
+    compacted_count: int = 0
 
 ProviderFactory: TypeAlias = Callable[[CliConfig], LLMProvider]
 
@@ -220,7 +224,7 @@ async def prepare_context_manager(
     models: ModelRegistry,
     restored_messages: Sequence[Message],
     user_message: UserMessage,
-) -> ContextManager:
+) -> PreparedContext:
     candidate_messages = [
         *restored_messages,
         user_message,
@@ -231,7 +235,9 @@ async def prepare_context_manager(
         candidate_messages,
         context_window=model.context_window,
     ):
-        return ContextManager()
+        return PreparedContext(
+            context_manager=ContextManager(),
+        )
 
     compaction = await compact_history(
         candidate_messages,
@@ -243,10 +249,15 @@ async def prepare_context_manager(
     )
 
     if compaction.compacted_count == 0:
-        return ContextManager()
+        return PreparedContext(
+            context_manager=ContextManager(),
+        )
 
-    return CompactedContextManager(
-        summary_message=compaction.messages[0],
+    return PreparedContext(
+        context_manager=CompactedContextManager(
+            summary_message=compaction.messages[0],
+            compacted_count=compaction.compacted_count,
+        ),
         compacted_count=compaction.compacted_count,
     )
 
@@ -275,7 +286,7 @@ async def run_task(
     tools.register(create_list_dir_tool(config.workspace))
 
     user_message = UserMessage(content=config.task)
-    context_manager = await prepare_context_manager(
+    prepared_context = await prepare_context_manager(
         config,
         model,
         models,
@@ -283,11 +294,23 @@ async def run_task(
         user_message,
     )
 
+    if prepared_context.compacted_count > 0:
+        message_word = (
+            "message"
+            if prepared_context.compacted_count == 1
+            else "messages"
+        )
+        print(
+            "context compacted: summarized "
+            f"{prepared_context.compacted_count} {message_word}",
+            file=output,
+        )
+
     state = AgentState(
         system_prompt=config.system_prompt,
         model=model,
         tools=tools,
-        context_manager=context_manager,
+        context_manager=prepared_context.context_manager,
         max_steps=config.max_steps,
         messages=restored_messages,
     )
