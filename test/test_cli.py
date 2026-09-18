@@ -824,6 +824,13 @@ def test_main_compacts_restored_history_before_agent_run(
         "assistant",
     ]
     assert snapshot.messages[:4] == previous_messages
+    assert snapshot.messages[4] == current_user
+
+    persisted_final = snapshot.messages[5]
+    assert isinstance(persisted_final, AssistantMessage)
+    assert persisted_final.content == [
+        TextPart(text="Third task completed.")
+    ]
 
     persisted_users = [
         message.content

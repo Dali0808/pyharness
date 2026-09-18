@@ -4,6 +4,9 @@ from collections.abc import Sequence
 
 import pytest
 
+from agent.agent import AgentState
+from agent.loop import AgentRunner
+from agent.tools import ToolRegistry
 from ai.provider import ModelRegistry, ProviderError, ScriptedProvider
 from ai.schemas import (
     AssistantMessage,
@@ -532,3 +535,74 @@ def test_compacted_context_rejects_shorter_complete_history(
         manager.select(
             [UserMessage(content="Only message.")]
         )
+
+
+@pytest.mark.asyncio
+async def test_agent_run_uses_compacted_view_and_preserves_complete_state(
+) -> None:
+    model = ModelSpec(
+        provider="scripted",
+        id="test-model",
+    )
+    previous_messages = [
+        UserMessage(content="First task."),
+        assistant_text("First answer."),
+        UserMessage(content="Second task."),
+        assistant_text("Second answer."),
+    ]
+    original_messages = list(previous_messages)
+
+    summary_message = UserMessage(
+        content=(
+            f"{COMPACTION_SUMMARY_PREFIX}\n"
+            "The first task was completed."
+        )
+    )
+    context_manager = CompactedContextManager(
+        summary_message=summary_message,
+        compacted_count=2,
+    )
+
+    final_message = assistant_text("Third answer.")
+    provider = ScriptedProvider(
+        [
+            ChatResponse(
+                message=final_message,
+                finish_reason="stop",
+            )
+        ]
+    )
+    models = ModelRegistry()
+    models.register(model, provider)
+
+    state = AgentState(
+        system_prompt="Continue the coding task.",
+        model=model,
+        tools=ToolRegistry(),
+        context_manager=context_manager,
+        messages=previous_messages,
+    )
+    current_user = UserMessage(content="Third task.")
+
+    result = await AgentRunner(models).run(
+        state,
+        current_user,
+    )
+
+    assert result.failure is None
+    assert result.final_message == final_message
+    assert len(provider.requests) == 1
+
+    model_request = provider.requests[0]
+    assert model_request.messages == [
+        summary_message,
+        *original_messages[2:],
+        current_user,
+    ]
+
+    assert state.messages == [
+        *original_messages,
+        current_user,
+        final_message,
+    ]
+    assert summary_message not in state.messages
