@@ -24,6 +24,7 @@ from agent.events import (
 )
 from agent.loop import AgentRunner
 from agent.tools import ToolRegistry
+from agent.context import ContextManager
 from ai.openai_compatible import OpenAICompatibleProvider
 from ai.provider import LLMProvider, ModelRegistry
 from ai.schemas import (
@@ -44,12 +45,18 @@ from coding_agent.session import (
     JsonlSessionStore,
     SessionMetadata,
 )
+from coding_agent.compaction import (
+    CompactedContextManager,
+    ModelSummaryGenerator,
+    compact_history,
+    should_compact,
+)
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a coding assistant. Work only through the available "
     "workspace tools."
 )
-
+DEFAULT_KEEP_RECENT_TURNS = 2
 
 @dataclass(frozen=True, slots=True)
 class CliConfig:
@@ -62,6 +69,7 @@ class CliConfig:
     system_prompt: str
     max_steps: int
     session_path: Path | None = None
+    context_window: int | None = None
 
 
 ProviderFactory: TypeAlias = Callable[[CliConfig], LLMProvider]
@@ -94,6 +102,15 @@ def parse_args(argv: Sequence[str] | None = None) -> CliConfig:
         "--model",
         required=True,
         help="Model identifier.",
+    )
+    parser.add_argument(
+        "--context-window",
+        type=_positive_int,
+        default=None,
+        help=(
+            "Model context window in tokens. "
+            "Enables automatic context compaction."
+        ),
     )
     parser.add_argument(
         "--base-url",
@@ -144,6 +161,7 @@ def parse_args(argv: Sequence[str] | None = None) -> CliConfig:
         system_prompt=arguments.system_prompt,
         max_steps=arguments.max_steps,
         session_path=session_path,
+        context_window=arguments.context_window,
     )
 
 
@@ -196,6 +214,43 @@ def handle_run_event(
         session_store.append_message(event.result)
 
 
+async def prepare_context_manager(
+    config: CliConfig,
+    model: ModelSpec,
+    models: ModelRegistry,
+    restored_messages: Sequence[Message],
+    user_message: UserMessage,
+) -> ContextManager:
+    candidate_messages = [
+        *restored_messages,
+        user_message,
+    ]
+
+    if not should_compact(
+        config.system_prompt,
+        candidate_messages,
+        context_window=model.context_window,
+    ):
+        return ContextManager()
+
+    compaction = await compact_history(
+        candidate_messages,
+        keep_recent_turns=DEFAULT_KEEP_RECENT_TURNS,
+        summarizer=ModelSummaryGenerator(
+            models,
+            model,
+        ),
+    )
+
+    if compaction.compacted_count == 0:
+        return ContextManager()
+
+    return CompactedContextManager(
+        summary_message=compaction.messages[0],
+        compacted_count=compaction.compacted_count,
+    )
+
+
 async def run_task(
     config: CliConfig,
     provider: LLMProvider,
@@ -204,6 +259,7 @@ async def run_task(
     model = ModelSpec(
         provider=config.provider_id,
         id=config.model_id,
+        context_window=config.context_window,
     )
     session_store, restored_messages = prepare_session(
         config,
@@ -218,16 +274,26 @@ async def run_task(
     tools.register(create_write_file_tool(config.workspace))
     tools.register(create_list_dir_tool(config.workspace))
 
+    user_message = UserMessage(content=config.task)
+    context_manager = await prepare_context_manager(
+        config,
+        model,
+        models,
+        restored_messages,
+        user_message,
+    )
+
     state = AgentState(
         system_prompt=config.system_prompt,
         model=model,
         tools=tools,
+        context_manager=context_manager,
         max_steps=config.max_steps,
         messages=restored_messages,
     )
     runner = AgentRunner(models)
 
-    user_message = UserMessage(content=config.task)
+
 
     if session_store is not None:
         session_store.append_message(user_message)

@@ -21,6 +21,10 @@ from coding_agent.session import (
     JsonlSessionStore,
     SessionMetadata,
 )
+from coding_agent.compaction import (
+    COMPACTION_SUMMARY_PREFIX,
+    SUMMARY_SYSTEM_PROMPT,
+)
 
 def test_main_runs_workspace_tool_task_and_renders_events(
     tmp_path: Path,
@@ -631,3 +635,202 @@ def test_main_resumes_and_extends_session_across_runs(
         "Inspect the project language.",
         "What should we do next?",
     ]
+
+
+def test_parse_args_accepts_context_window(
+    tmp_path: Path,
+) -> None:
+    config = parse_args(
+        [
+            "Do work.",
+            "--workspace",
+            str(tmp_path),
+            "--model",
+            "test-model",
+            "--context-window",
+            "4096",
+        ]
+    )
+
+    assert config.context_window == 4096
+
+
+def test_parse_args_defaults_context_window_to_none(
+    tmp_path: Path,
+) -> None:
+    config = parse_args(
+        [
+            "Do work.",
+            "--workspace",
+            str(tmp_path),
+            "--model",
+            "test-model",
+        ]
+    )
+
+    assert config.context_window is None
+
+
+def test_parse_args_rejects_non_positive_context_window(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        parse_args(
+            [
+                "Do work.",
+                "--workspace",
+                str(tmp_path),
+                "--model",
+                "test-model",
+                "--context-window",
+                "0",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+
+
+def test_main_compacts_restored_history_before_agent_run(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    session_path = workspace / "history.jsonl"
+    system_prompt = "Continue the coding task."
+    store = JsonlSessionStore(session_path)
+
+    model = ModelSpec(
+        provider="scripted",
+        id="test-model",
+        context_window=1,
+    )
+    previous_messages = [
+        UserMessage(content="First task."),
+        AssistantMessage(
+            content=[TextPart(text="First task completed.")],
+        ),
+        UserMessage(content="Second task."),
+        AssistantMessage(
+            content=[TextPart(text="Second task completed.")],
+        ),
+    ]
+
+    store.create(
+        SessionMetadata(
+            session_id="session-existing",
+            created_at=datetime(
+                2026,
+                9,
+                18,
+                8,
+                0,
+                tzinfo=timezone.utc,
+            ),
+            workspace=str(workspace.resolve()),
+            system_prompt=system_prompt,
+            model=model,
+        )
+    )
+    for message in previous_messages:
+        store.append_message(message)
+
+    provider = ScriptedProvider(
+        [
+            ChatResponse(
+                message=AssistantMessage(
+                    content=[
+                        TextPart(
+                            text="The first task was completed."
+                        )
+                    ]
+                ),
+                finish_reason="stop",
+            ),
+            ChatResponse(
+                message=AssistantMessage(
+                    content=[
+                        TextPart(text="Third task completed.")
+                    ]
+                ),
+                finish_reason="stop",
+            ),
+        ]
+    )
+
+    exit_code = main(
+        [
+            "Complete the third task.",
+            "--workspace",
+            str(workspace),
+            "--provider-id",
+            "scripted",
+            "--model",
+            "test-model",
+            "--system-prompt",
+            system_prompt,
+            "--context-window",
+            "1",
+            "--session",
+            "history.jsonl",
+        ],
+        provider_factory=lambda _: provider,
+        output=StringIO(),
+    )
+
+    assert exit_code == 0
+    assert len(provider.requests) == 2
+
+    summary_request = provider.requests[0]
+    assert summary_request.system_prompt == SUMMARY_SYSTEM_PROMPT
+    assert summary_request.messages == previous_messages[:2]
+    assert summary_request.tools == []
+
+    agent_request = provider.requests[1]
+    assert agent_request.system_prompt == system_prompt
+    assert [
+        message.role
+        for message in agent_request.messages
+    ] == [
+        "user",
+        "user",
+        "assistant",
+        "user",
+    ]
+
+    summary_message = agent_request.messages[0]
+    assert isinstance(summary_message, UserMessage)
+    assert summary_message.content == (
+        f"{COMPACTION_SUMMARY_PREFIX}\n"
+        "The first task was completed."
+    )
+
+    assert agent_request.messages[1:3] == previous_messages[2:]
+
+    current_user = agent_request.messages[3]
+    assert isinstance(current_user, UserMessage)
+    assert current_user.content == "Complete the third task."
+
+    snapshot = store.load()
+
+    assert [
+        message.role
+        for message in snapshot.messages
+    ] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    assert snapshot.messages[:4] == previous_messages
+
+    persisted_users = [
+        message.content
+        for message in snapshot.messages
+        if isinstance(message, UserMessage)
+    ]
+    assert all(
+        not content.startswith(COMPACTION_SUMMARY_PREFIX)
+        for content in persisted_users
+    )
