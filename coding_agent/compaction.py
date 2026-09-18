@@ -3,17 +3,93 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
-from ai.schemas import Message, UserMessage
+from ai.provider import ModelRegistry
+from ai.schemas import (
+    ChatRequest,
+    Message,
+    ModelSpec,
+    TextPart,
+    UserMessage,
+)
 
 
 DEFAULT_BYTES_PER_TOKEN = 4
+COMPACTION_SUMMARY_PREFIX = "[Summary of earlier conversation]"
+SUMMARY_SYSTEM_PROMPT = (
+    "Summarize the earlier coding-agent conversation. "
+    "Preserve completed work, decisions, file paths, tool results, "
+    "errors, and unresolved next steps. Be concise and factual."
+)
+
+
+class SummaryGenerator(Protocol):
+    async def __call__(
+        self,
+        messages: Sequence[Message],
+    ) -> str: ...
+
+class SummaryGenerationError(RuntimeError):
+    """Raised when a usable history summary cannot be produced."""
+
+
+class ModelSummaryGenerator:
+    def __init__(
+        self,
+        models: ModelRegistry,
+        model: ModelSpec,
+        *,
+        system_prompt: str = SUMMARY_SYSTEM_PROMPT,
+    ) -> None:
+        self._models = models
+        self._model = model
+        self._system_prompt = system_prompt
+
+    async def __call__(
+        self,
+        messages: Sequence[Message],
+    ) -> str:
+        request = ChatRequest(
+            system_prompt=self._system_prompt,
+            messages=list(messages),
+            tools=[],
+            temperature=0.0,
+        )
+        response = await self._models.complete(
+            self._model,
+            request,
+        )
+
+        if response.finish_reason == "length":
+            raise SummaryGenerationError(
+                "summary response was truncated"
+            )
+
+        summary = "".join(
+            part.text
+            for part in response.message.content
+            if isinstance(part, TextPart)
+        ).strip()
+
+        if not summary:
+            raise SummaryGenerationError(
+                "model returned an empty summary"
+            )
+
+        return summary
 
 
 @dataclass(frozen=True, slots=True)
 class HistoryPartition:
     compactable: list[Message]
     retained: list[Message]
+
+
+@dataclass(frozen=True, slots=True)
+class CompactionResult:
+    messages: list[Message]
+    compacted_count: int
 
 
 def partition_history(
@@ -113,3 +189,37 @@ def should_compact(
     )
 
     return estimated_tokens >= trigger_tokens
+
+
+async def compact_history(
+    messages: Sequence[Message],
+    *,
+    keep_recent_turns: int,
+    summarizer: SummaryGenerator,
+) -> CompactionResult:
+    partition = partition_history(
+        messages,
+        keep_recent_turns=keep_recent_turns,
+    )
+
+    if not partition.compactable:
+        return CompactionResult(
+            messages=list(partition.retained),
+            compacted_count=0,
+        )
+
+    summary = await summarizer(partition.compactable)
+    summary_message = UserMessage(
+        content=(
+            f"{COMPACTION_SUMMARY_PREFIX}\n"
+            f"{summary}"
+        )
+    )
+
+    return CompactionResult(
+        messages=[
+            summary_message,
+            *partition.retained,
+        ],
+        compacted_count=len(partition.compactable),
+    )

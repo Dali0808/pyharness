@@ -1,19 +1,45 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import pytest
 
+from ai.provider import ModelRegistry, ProviderError, ScriptedProvider
 from ai.schemas import (
     AssistantMessage,
+    Message,
     TextPart,
     ToolCallPart,
     ToolResultMessage,
     UserMessage,
+    ChatResponse,
+    ModelSpec,
 )
 from coding_agent.compaction import (
+    COMPACTION_SUMMARY_PREFIX,
+    compact_history,
     estimate_context_tokens,
     partition_history,
     should_compact,
+    ModelSummaryGenerator,
+    SUMMARY_SYSTEM_PROMPT,
+    SummaryGenerationError,
 )
+
+class RecordingSummarizer:
+    def __init__(
+        self,
+        summary: str = "Earlier work was summarized.",
+    ) -> None:
+        self.summary = summary
+        self.calls: list[list[Message]] = []
+
+    async def __call__(
+        self,
+        messages: Sequence[Message],
+    ) -> str:
+        self.calls.append(list(messages))
+        return self.summary
 
 
 def assistant_text(text: str) -> AssistantMessage:
@@ -222,4 +248,195 @@ def test_should_compact_rejects_invalid_configuration(
             [],
             context_window=context_window,
             trigger_ratio=trigger_ratio,
+        )
+
+
+@pytest.mark.asyncio
+async def test_compact_history_replaces_early_turns_with_summary(
+) -> None:
+    messages = [
+        UserMessage(content="First task."),
+        assistant_text("First answer."),
+        UserMessage(content="Second task."),
+        assistant_text("Second answer."),
+    ]
+    original = list(messages)
+    summarizer = RecordingSummarizer(
+        "The first task was completed.",
+    )
+
+    result = await compact_history(
+        messages,
+        keep_recent_turns=1,
+        summarizer=summarizer,
+    )
+
+    assert summarizer.calls == [messages[:2]]
+    assert result.compacted_count == 2
+    assert len(result.messages) == 3
+
+    summary_message = result.messages[0]
+    assert isinstance(summary_message, UserMessage)
+    assert summary_message.content == (
+        f"{COMPACTION_SUMMARY_PREFIX}\n"
+        "The first task was completed."
+    )
+
+    assert result.messages[1:] == messages[2:]
+    assert messages == original
+    assert result.messages is not messages
+
+
+@pytest.mark.asyncio
+async def test_compact_history_skips_summarizer_when_nothing_is_compactable(
+) -> None:
+    messages = [
+        UserMessage(content="Only task."),
+        assistant_text("Only answer."),
+    ]
+    summarizer = RecordingSummarizer()
+
+    result = await compact_history(
+        messages,
+        keep_recent_turns=2,
+        summarizer=summarizer,
+    )
+
+    assert summarizer.calls == []
+    assert result.compacted_count == 0
+    assert result.messages == messages
+    assert result.messages is not messages
+
+
+@pytest.mark.asyncio
+async def test_compact_history_preserves_original_when_summarizer_fails(
+) -> None:
+    messages = [
+        UserMessage(content="First task."),
+        assistant_text("First answer."),
+        UserMessage(content="Second task."),
+        assistant_text("Second answer."),
+    ]
+    original = list(messages)
+
+    async def failing_summarizer(
+        compactable: Sequence[Message],
+    ) -> str:
+        raise RuntimeError("summary unavailable")
+
+    with pytest.raises(
+        RuntimeError,
+        match="summary unavailable",
+    ):
+        await compact_history(
+            messages,
+            keep_recent_turns=1,
+            summarizer=failing_summarizer,
+        )
+
+    assert messages == original
+
+
+def make_summary_generator(
+    responses: list[ChatResponse],
+) -> tuple[ModelSummaryGenerator, ScriptedProvider]:
+    model = ModelSpec(
+        provider="scripted",
+        id="summary-model",
+    )
+    provider = ScriptedProvider(responses)
+    models = ModelRegistry()
+    models.register(model, provider)
+
+    return ModelSummaryGenerator(models, model), provider
+
+
+@pytest.mark.asyncio
+async def test_model_summarizer_requests_summary_without_tools(
+) -> None:
+    messages = [
+        UserMessage(content="Inspect the project."),
+        assistant_text("The project uses Python."),
+    ]
+    summarizer, provider = make_summary_generator(
+        [
+            ChatResponse(
+                message=AssistantMessage(
+                    content=[
+                        TextPart(text="Project inspected. "),
+                        TextPart(text="It uses Python."),
+                    ]
+                ),
+                finish_reason="stop",
+            )
+        ]
+    )
+
+    summary = await summarizer(messages)
+
+    assert summary == "Project inspected. It uses Python."
+    assert len(provider.requests) == 1
+
+    request = provider.requests[0]
+    assert request.system_prompt == SUMMARY_SYSTEM_PROMPT
+    assert request.messages == messages
+    assert request.tools == []
+    assert request.temperature == 0.0
+
+
+@pytest.mark.asyncio
+async def test_model_summarizer_rejects_empty_summary(
+) -> None:
+    summarizer, _ = make_summary_generator(
+        [
+            ChatResponse(
+                message=AssistantMessage(content=[]),
+                finish_reason="stop",
+            )
+        ]
+    )
+
+    with pytest.raises(
+        SummaryGenerationError,
+        match="empty summary",
+    ):
+        await summarizer(
+            [UserMessage(content="Old task.")]
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_summarizer_rejects_truncated_summary(
+) -> None:
+    summarizer, _ = make_summary_generator(
+        [
+            ChatResponse(
+                message=AssistantMessage(
+                    content=[TextPart(text="Partial summary")]
+                ),
+                finish_reason="length",
+            )
+        ]
+    )
+
+    with pytest.raises(
+        SummaryGenerationError,
+        match="summary response was truncated",
+    ):
+        await summarizer(
+            [UserMessage(content="Old task.")]
+        )
+
+
+@pytest.mark.asyncio
+async def test_model_summarizer_propagates_provider_error(
+) -> None:
+    summarizer, _ = make_summary_generator([])
+
+    with pytest.raises(
+        ProviderError,
+        match="no remaining response",
+    ):
+        await summarizer(
+            [UserMessage(content="Old task.")]
         )
