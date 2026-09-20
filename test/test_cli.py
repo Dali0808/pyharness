@@ -16,7 +16,12 @@ from ai.schemas import (
     UserMessage,
     ToolResultMessage,
 )
-from coding_agent.cli import CliConfig, main, parse_args
+from coding_agent.cli import (
+    CliConfig,
+    main,
+    parse_args,
+    run_task,
+)
 from coding_agent.session import (
     JsonlSessionStore,
     SessionMetadata,
@@ -116,6 +121,50 @@ def test_main_runs_workspace_tool_task_and_renders_events(
     assert "context compacted:" not in rendered
 
 
+@pytest.mark.asyncio
+async def test_run_task_returns_structured_success_result(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    final_message = AssistantMessage(
+        content=[TextPart(text="Task completed.")]
+    )
+    provider = ScriptedProvider(
+        [
+            ChatResponse(
+                message=final_message,
+                finish_reason="stop",
+            )
+        ]
+    )
+
+    config = parse_args(
+        [
+            "Complete the task.",
+            "--workspace",
+            str(workspace),
+            "--provider-id",
+            "scripted",
+            "--model",
+            "test-model",
+        ]
+    )
+
+    result = await run_task(
+        config,
+        provider,
+        StringIO(),
+    )
+
+    assert result.exit_code == 0
+    assert result.run_result.failure is None
+    assert result.run_result.final_message == final_message
+    assert result.run_result.steps == 1
+    assert result.run_result.usage.total_tokens == 0
+
+
 def test_main_returns_nonzero_for_agent_failure(
     tmp_path: Path,
 ) -> None:
@@ -160,6 +209,53 @@ def test_main_returns_nonzero_for_agent_failure(
         "Model response was truncated before completion."
         in rendered
     )
+
+
+@pytest.mark.asyncio
+async def test_run_task_returns_structured_failure_result(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    provider = ScriptedProvider(
+        [
+            ChatResponse(
+                message=AssistantMessage(
+                    content=[
+                        TextPart(text="Partial response")
+                    ]
+                ),
+                finish_reason="length",
+            )
+        ]
+    )
+
+    config = parse_args(
+        [
+            "Write a long response.",
+            "--workspace",
+            str(workspace),
+            "--provider-id",
+            "scripted",
+            "--model",
+            "test-model",
+        ]
+    )
+
+    result = await run_task(
+        config,
+        provider,
+        StringIO(),
+    )
+
+    assert result.exit_code == 1
+    assert result.run_result.final_message is None
+    assert result.run_result.failure is not None
+    assert result.run_result.failure.code == (
+        "response_truncated"
+    )
+    assert result.run_result.steps == 1
 
 
 def test_parse_args_rejects_non_positive_max_steps(
@@ -847,3 +943,5 @@ def test_main_compacts_restored_history_before_agent_run(
         not content.startswith(COMPACTION_SUMMARY_PREFIX)
         for content in persisted_users
     )
+
+

@@ -22,7 +22,7 @@ from agent.events import (
     ToolFinished,
     ToolStarted,
 )
-from agent.loop import AgentRunner
+from agent.loop import AgentRunner, RunResult
 from agent.tools import ToolRegistry
 from agent.context import ContextManager
 from ai.openai_compatible import OpenAICompatibleProvider
@@ -70,6 +70,11 @@ class CliConfig:
     max_steps: int
     session_path: Path | None = None
     context_window: int | None = None
+
+@dataclass(frozen=True, slots=True)
+class TaskRunResult:
+    exit_code: int
+    run_result: RunResult
 
 @dataclass(frozen=True, slots=True)
 class PreparedContext:
@@ -266,7 +271,7 @@ async def run_task(
     config: CliConfig,
     provider: LLMProvider,
     output: TextIO,
-) -> int:
+) -> TaskRunResult:
     model = ModelSpec(
         provider=config.provider_id,
         id=config.model_id,
@@ -336,17 +341,26 @@ async def run_task(
             f"failed ({result.failure.code}): {result.failure.message}",
             file=output,
         )
-        return 1
+        return TaskRunResult(
+            exit_code=1,
+            run_result=result,
+        )
 
     if result.final_message is None:
         print("failed: agent returned no final message", file=output)
-        return 1
+        return TaskRunResult(
+            exit_code=1,
+            run_result=result,
+        )
 
     print(
         f"answer: {assistant_text(result.final_message)}",
         file=output,
     )
-    return 0
+    return TaskRunResult(
+        exit_code=0,
+        run_result=result,
+    )
 
 
 def main(
@@ -370,7 +384,12 @@ async def _run_main(
     provider = provider_factory(config)
 
     try:
-        return await run_task(config, provider, output)
+        task_result = await run_task(
+            config,
+            provider,
+            output,
+        )
+        return task_result.exit_code
     finally:
         await close_provider(provider)
 
