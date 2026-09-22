@@ -21,11 +21,11 @@ READ_FILE_CASE = EvalCase(
 WRITE_FILE_CASE = EvalCase(
     case_id="workspace-write-file",
     task=(
-        "Create output/greeting.txt with exactly this content:\n"
+        "Create greeting.txt with exactly this content:\n"
         "Hello from pyharness.\n"
     ),
     expected_files={
-        "output/greeting.txt": "Hello from pyharness.\n",
+        "greeting.txt": "Hello from pyharness.\n",
     },
     required_tools=frozenset({"write_file"}),
 )
@@ -49,7 +49,7 @@ READ_THEN_WRITE_CASE = EvalCase(
     case_id="workspace-read-then-write",
     task=(
         "Read input/requirements.txt and write its contents "
-        "unchanged to output/copied-requirements.txt."
+        "unchanged to copied-requirements.txt."
     ),
     initial_files={
         "input/requirements.txt": (
@@ -58,7 +58,7 @@ READ_THEN_WRITE_CASE = EvalCase(
         ),
     },
     expected_files={
-        "output/copied-requirements.txt": (
+        "copied-requirements.txt": (
             "Python >= 3.11\n"
             "pytest\n"
         ),
@@ -77,13 +77,13 @@ TOOL_ERROR_RECOVERY_CASE = EvalCase(
     task=(
         "The first path may be invalid. Recover from a failed "
         "file read, then read input/actual.txt and write its "
-        "contents to output/recovered.txt."
+        "contents to recovered.txt."
     ),
     initial_files={
         "input/actual.txt": "Recovered successfully.\n",
     },
     expected_files={
-        "output/recovered.txt": "Recovered successfully.\n",
+        "recovered.txt": "Recovered successfully.\n",
     },
     required_tools=frozenset(
         {
