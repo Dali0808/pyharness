@@ -52,6 +52,23 @@ def write_file_response(
     )
 
 
+def failed_tool_response(
+    tool_name: str = "missing_tool",
+) -> ChatResponse:
+    return ChatResponse(
+        message=AssistantMessage(
+            content=[
+                ToolCallPart(
+                    id="call-error",
+                    name=tool_name,
+                    arguments_json="{}",
+                ),
+            ],
+        ),
+        finish_reason="tool_calls",
+    )
+
+
 @dataclass
 class ProviderFactoryRecorder:
     provider: ScriptedProvider
@@ -253,3 +270,28 @@ async def test_runner_closes_provider_after_run() -> None:
 
     assert result.task_result.exit_code == 0
     assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_runner_collects_tool_errors() -> None:
+    case = EvalCase(
+        case_id="collect-tool-error",
+        task="Recover from a failed tool call.",
+        required_tools=frozenset({"read_file"}),
+    )
+    provider = ScriptedProvider(
+        [
+            failed_tool_response(),
+            final_response("Recovered."),
+        ],
+    )
+
+    result = await EvalRunner().run_case(
+        case,
+        lambda _: provider,
+    )
+
+    assert result.task_result.exit_code == 0
+    assert len(result.tool_errors) == 1
+    assert result.tool_errors[0].is_error is True
+    assert result.tool_errors[0].tool_name == "missing_tool"

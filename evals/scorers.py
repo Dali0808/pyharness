@@ -123,3 +123,48 @@ def score_json_file(
         score=1.0,
         reason=f"JSON content matches: {path}",
     )
+
+def score_tool_error_recovery(
+    result: EvalRunResult,
+    output_path: str,
+    expected_content: str,
+) -> ScoreResult:
+    if result.task_result.exit_code != 0:
+        return ScoreResult(
+            passed=False,
+            score=0.0,
+            reason="run failed before recovery completed",
+        )
+
+    if not result.tool_errors:
+        return ScoreResult(
+            passed=False,
+            score=0.0,
+            reason="no tool error was observed",
+        )
+
+    output_score = score_file_contents(
+        result,
+        {
+            output_path: expected_content,
+        },
+    )
+
+    if not output_score.passed:
+        return ScoreResult(
+            passed=False,
+            score=0.0,
+            reason=(
+                "tool error occurred, but recovery output "
+                f"was invalid: {output_score.reason}"
+            ),
+        )
+
+    return ScoreResult(
+        passed=True,
+        score=1.0,
+        reason=(
+            "tool error was observed and the recovery "
+            "output is correct"
+        ),
+    )

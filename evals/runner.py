@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import tempfile
 import time
 from collections.abc import Callable, Mapping
@@ -10,7 +9,9 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TypeAlias
 
+from agent.events import AgentEvent, ToolFinished
 from ai.provider import LLMProvider
+from ai.schemas import ToolResultMessage
 from coding_agent.cli import (
     CliConfig,
     TaskRunResult,
@@ -29,6 +30,7 @@ class EvalRunResult:
     task_result: TaskRunResult
     elapsed_seconds: float
     final_files: Mapping[str, str]
+    tool_errors: tuple[ToolResultMessage, ...]
 
 
 class EvalRunner:
@@ -63,13 +65,22 @@ class EvalRunner:
             )
 
             provider = provider_factory(config)
+            tool_errors: list[ToolResultMessage] = []
             started_at = time.perf_counter()
+
+            def collect_event(event: AgentEvent) -> None:
+                if (
+                        isinstance(event, ToolFinished)
+                        and event.result.is_error
+                ):
+                    tool_errors.append(event.result)
 
             try:
                 task_result = await run_task(
                     config,
                     provider,
                     StringIO(),
+                    on_event=collect_event,
                 )
             finally:
                 await close_provider(provider)
@@ -84,6 +95,7 @@ class EvalRunner:
                 task_result=task_result,
                 elapsed_seconds=elapsed_seconds,
                 final_files=final_files,
+                tool_errors=tuple(tool_errors),
             )
 
     @staticmethod

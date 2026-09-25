@@ -21,6 +21,7 @@ from agent.events import (
     RunStarted,
     ToolFinished,
     ToolStarted,
+    EventHandler,
 )
 from agent.loop import AgentRunner, RunResult
 from agent.tools import ToolRegistry
@@ -271,6 +272,8 @@ async def run_task(
     config: CliConfig,
     provider: LLMProvider,
     output: TextIO,
+    *,
+    on_event: EventHandler | None = None,
 ) -> TaskRunResult:
     model = ModelSpec(
         provider=config.provider_id,
@@ -326,14 +329,20 @@ async def run_task(
     if session_store is not None:
         session_store.append_message(user_message)
 
-    result = await runner.run(
-        state,
-        user_message,
-        on_event=lambda event: handle_run_event(
+    def handle_event(event: AgentEvent) -> None:
+        handle_run_event(
             event,
             output,
             session_store,
-        ),
+        )
+
+        if on_event is not None:
+            on_event(event)
+
+    result = await runner.run(
+        state,
+        user_message,
+        on_event=handle_event,
     )
 
     if result.failure is not None:
