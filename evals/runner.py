@@ -33,7 +33,27 @@ class EvalRunResult:
     tool_errors: tuple[ToolResultMessage, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class EvalRunnerConfig:
+    provider_id: str = "scripted"
+    model_id: str = "eval-model"
+    base_url: str = "http://eval.invalid"
+    api_key_env: str = "PYHARNESS_EVAL_API_KEY"
+    system_prompt: str = (
+        "You are a coding assistant. Work only "
+        "through the available workspace tools."
+    )
+    max_steps: int = 10
+    context_window: int | None = None
+
+
 class EvalRunner:
+    def __init__(
+        self,
+        config: EvalRunnerConfig | None = None,
+    ) -> None:
+        self._config = config or EvalRunnerConfig()
+
     async def run_case(
         self,
         case: EvalCase,
@@ -51,17 +71,14 @@ class EvalRunner:
             config = CliConfig(
                 task=case.task,
                 workspace=workspace,
-                provider_id="scripted",
-                model_id="eval-model",
-                base_url="http://eval.invalid",
-                api_key_env="PYHARNESS_EVAL_API_KEY",
-                system_prompt=(
-                    "You are a coding assistant. Work only "
-                    "through the available workspace tools."
-                ),
-                max_steps=10,
+                provider_id=self._config.provider_id,
+                model_id=self._config.model_id,
+                base_url=self._config.base_url,
+                api_key_env=self._config.api_key_env,
+                system_prompt=self._config.system_prompt,
+                max_steps=self._config.max_steps,
                 session_path=None,
-                context_window=None,
+                context_window=self._config.context_window,
             )
 
             provider = provider_factory(config)

@@ -16,7 +16,7 @@ from evals.reports import (
     build_report,
     write_reports,
 )
-from evals.runner import ProviderFactory
+from evals.runner import EvalRunner, EvalRunnerConfig, ProviderFactory
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,13 +33,31 @@ async def run_evaluation(
     json_path: Path | None = None,
     markdown_path: Path | None = None,
     evaluator: Evaluator | None = None,
+    runner_config: EvalRunnerConfig | None = None,
 ) -> EvaluationRun:
     if (json_path is None) != (markdown_path is None):
         raise ValueError(
             "json_path and markdown_path must be provided together"
         )
 
-    active_evaluator = evaluator or Evaluator()
+    if (
+            json_path is not None
+            and markdown_path is not None
+            and json_path.resolve(strict=False)
+            == markdown_path.resolve(strict=False)
+    ):
+        raise ValueError(
+            "json_path and markdown_path must be different files"
+        )
+
+    if evaluator is not None and runner_config is not None:
+        raise ValueError(
+            "evaluator and runner_config cannot be used together"
+        )
+
+    active_evaluator = evaluator or Evaluator(
+        runner=EvalRunner(runner_config),
+    )
     selected_cases = tuple(cases)
     results = tuple(
         await active_evaluator.evaluate_cases(

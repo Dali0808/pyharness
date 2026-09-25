@@ -13,6 +13,7 @@ from ai.schemas import (
     TextPart,
     ToolCallPart,
 )
+from evals.runner import EvalRunnerConfig
 from coding_agent.cli import CliConfig
 from evals.api import run_evaluation
 from evals.cases.catalog import ALL_CASES
@@ -101,6 +102,10 @@ def make_provider() -> ScriptedProvider:
     )
 
 
+class AlternateScriptedProvider(ScriptedProvider):
+    id = "alternate"
+
+
 @pytest.mark.asyncio
 async def test_run_evaluation_uses_all_cases_by_default() -> None:
     evaluator = RecordingEvaluator()
@@ -187,3 +192,58 @@ async def test_run_evaluation_rejects_partial_report_paths(
         )
 
     assert not json_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_uses_runner_provider_configuration() -> None:
+    case = make_write_case()
+    provider = AlternateScriptedProvider(
+        [
+            write_file_response(
+                "result.txt",
+                "generated content\n",
+            ),
+            final_response(),
+        ]
+    )
+    received_configs: list[CliConfig] = []
+
+    def provider_factory(config: CliConfig) -> AlternateScriptedProvider:
+        received_configs.append(config)
+        return provider
+
+    run = await run_evaluation(
+        provider_factory,
+        cases=[case],
+        runner_config=EvalRunnerConfig(
+            provider_id="alternate",
+            model_id="alternate-model",
+            base_url="https://provider.invalid",
+            api_key_env="ALTERNATE_API_KEY",
+        ),
+    )
+
+    assert run.results[0].score.passed is True
+    assert received_configs[0].provider_id == "alternate"
+    assert received_configs[0].model_id == "alternate-model"
+    assert received_configs[0].base_url == "https://provider.invalid"
+    assert received_configs[0].api_key_env == "ALTERNATE_API_KEY"
+
+
+@pytest.mark.asyncio
+async def test_run_evaluation_rejects_identical_report_paths(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "evaluation.json"
+
+    with pytest.raises(
+        ValueError,
+        match="json_path and markdown_path must be different files",
+    ):
+        await run_evaluation(
+            lambda _: ScriptedProvider([]),
+            json_path=report_path,
+            markdown_path=report_path,
+        )
+
+    assert not report_path.exists()
