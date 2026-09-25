@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-
+from evals.cases.catalog import ALL_CASES
 from evals.cases.model import EvalCase, EvalCaseError
 from evals.cases.smoke import SMOKE_CASES
+from evals.cases.standard import STANDARD_CASES
 
 
 def test_smoke_cases_have_unique_ids() -> None:
@@ -158,3 +159,50 @@ def test_smoke_catalog_marks_one_error_recovery_case() -> None:
     assert [case.case_id for case in recovery_cases] == [
         "workspace-tool-error-recovery",
     ]
+
+
+def test_standard_cases_have_unique_ids() -> None:
+    case_ids = [
+        case.case_id
+        for case in STANDARD_CASES
+    ]
+
+    assert len(case_ids) == len(set(case_ids))
+
+
+def test_all_cases_contains_at_least_twenty_cases() -> None:
+    assert len(ALL_CASES) >= 20
+
+
+def test_all_cases_have_unique_ids() -> None:
+    case_ids = [
+        case.case_id
+        for case in ALL_CASES
+    ]
+
+    assert len(case_ids) == len(set(case_ids))
+
+
+def test_all_cases_define_deterministic_file_expectations() -> None:
+    assert ALL_CASES
+
+    for case in ALL_CASES:
+        assert case.expected_files
+
+
+def test_all_cases_cover_required_workspace_workflows() -> None:
+    covered_tools = set().union(
+        *(case.required_tools for case in ALL_CASES)
+    )
+    recovery_cases = [
+        case
+        for case in ALL_CASES
+        if case.requires_tool_error_recovery
+    ]
+
+    assert {
+        "read_file",
+        "write_file",
+        "list_dir",
+    } <= covered_tools
+    assert len(recovery_cases) >= 2
