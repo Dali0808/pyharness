@@ -7,6 +7,7 @@ import pytest
 from evals.cases.model import EvalCase, EvalCaseError
 from evals.cases.smoke import SMOKE_CASES
 
+
 def test_smoke_cases_have_unique_ids() -> None:
     case_ids = [
         case.case_id
@@ -114,6 +115,19 @@ def test_case_rejects_empty_task() -> None:
         )
 
 
+def test_case_rejects_non_boolean_recovery_requirement() -> None:
+    with pytest.raises(
+        EvalCaseError,
+        match="must be a boolean",
+    ):
+        EvalCase(
+            case_id="invalid-recovery-requirement",
+            task="Recover from an error.",
+            required_tools=frozenset({"read_file"}),
+            requires_tool_error_recovery="yes",  # type: ignore[arg-type]
+        )
+
+
 def test_smoke_catalog_covers_workspace_tool_workflows() -> None:
     required_tools = {
         "read_file",
@@ -127,14 +141,20 @@ def test_smoke_catalog_covers_workspace_tool_workflows() -> None:
     assert required_tools <= covered_tools
 
 
-def test_smoke_catalog_contains_write_expectations() -> None:
-    cases_with_expected_files = [
+def test_smoke_catalog_contains_file_expectations() -> None:
+    assert SMOKE_CASES
+
+    for case in SMOKE_CASES:
+        assert case.expected_files
+
+
+def test_smoke_catalog_marks_one_error_recovery_case() -> None:
+    recovery_cases = [
         case
         for case in SMOKE_CASES
-        if case.expected_files
+        if case.requires_tool_error_recovery
     ]
 
-    assert cases_with_expected_files
-
-    for case in cases_with_expected_files:
-        assert "write_file" in case.required_tools
+    assert [case.case_id for case in recovery_cases] == [
+        "workspace-tool-error-recovery",
+    ]

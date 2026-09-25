@@ -6,15 +6,25 @@ from evals.cases.model import EvalCase
 READ_FILE_CASE = EvalCase(
     case_id="workspace-read-file",
     task=(
-        "Read notes/task.txt and report its exact contents "
-        "in your final answer."
+        "Read notes/task.txt and write its contents unchanged "
+        "to copied-task.txt."
     ),
     initial_files={
         "notes/task.txt": (
             "Prepare a short project status summary.\n"
         ),
     },
-    required_tools=frozenset({"read_file"}),
+    expected_files={
+        "copied-task.txt": (
+            "Prepare a short project status summary.\n"
+        ),
+    },
+    required_tools=frozenset(
+        {
+            "read_file",
+            "write_file",
+        }
+    ),
 )
 
 
@@ -34,14 +44,22 @@ WRITE_FILE_CASE = EvalCase(
 LIST_DIR_CASE = EvalCase(
     case_id="workspace-list-dir",
     task=(
-        "Inspect the src directory and report the names of "
-        "the files it contains."
+        "List the src directory and write the file names in "
+        "lexicographic order, one per line, to manifest.txt."
     ),
     initial_files={
         "src/main.py": "print('main')\n",
         "src/utils.py": "def helper():\n    return 1\n",
     },
-    required_tools=frozenset({"list_dir"}),
+    expected_files={
+        "manifest.txt": "main.py\nutils.py\n",
+    },
+    required_tools=frozenset(
+        {
+            "list_dir",
+            "write_file",
+        }
+    ),
 )
 
 
@@ -91,6 +109,7 @@ TOOL_ERROR_RECOVERY_CASE = EvalCase(
             "write_file",
         }
     ),
+    requires_tool_error_recovery=True,
 )
 
 

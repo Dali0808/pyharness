@@ -4,8 +4,10 @@ from agent.loop import RunFailure, RunResult
 from ai.schemas import ToolResultMessage, Usage
 from coding_agent.cli import TaskRunResult
 from evals.runner import EvalRunResult
+from evals.cases.model import EvalCase
 from evals.scorers import (
     ScoreResult,
+    score_case,
     score_file_contents,
     score_file_exists,
     score_json_file,
@@ -303,3 +305,101 @@ def test_score_tool_error_recovery_fails_for_wrong_output() -> None:
     assert score.passed is False
     assert score.score == 0.0
     assert "mismatch" in score.reason
+
+
+def test_score_case_uses_file_content_scoring() -> None:
+    case = EvalCase(
+        case_id="content-case",
+        task="Create result.txt.",
+        expected_files={
+            "result.txt": "expected content",
+        },
+        required_tools=frozenset({"write_file"}),
+    )
+    result = make_result(
+        {
+            "result.txt": "expected content",
+        }
+    )
+
+    score = score_case(case, result)
+
+    assert score == ScoreResult(
+        passed=True,
+        score=1.0,
+        reason="all expected file contents match",
+    )
+
+
+def test_score_case_uses_error_recovery_scoring() -> None:
+    case = EvalCase(
+        case_id="recovery-case",
+        task="Recover from a failed tool call.",
+        expected_files={
+            "recovered.txt": "Recovered.\n",
+        },
+        required_tools=frozenset(
+            {
+                "read_file",
+                "write_file",
+            }
+        ),
+        requires_tool_error_recovery=True,
+    )
+    result = make_result(
+        {
+            "recovered.txt": "Recovered.\n",
+        },
+        tool_errors=(tool_error(),),
+    )
+
+    score = score_case(case, result)
+
+    assert score.passed is True
+    assert score.score == 1.0
+
+
+def test_score_case_rejects_missing_expectations() -> None:
+    case = EvalCase(
+        case_id="unscorable-case",
+        task="Do something.",
+        required_tools=frozenset({"read_file"}),
+    )
+    result = make_result({})
+
+    score = score_case(case, result)
+
+    assert score.passed is False
+    assert score.score == 0.0
+    assert "no deterministic expected files" in score.reason
+
+
+def test_score_case_rejects_recovery_case_with_multiple_outputs() -> None:
+    case = EvalCase(
+        case_id="invalid-recovery-case",
+        task="Recover from an error.",
+        expected_files={
+            "first.txt": "first",
+            "second.txt": "second",
+        },
+        required_tools=frozenset(
+            {
+                "read_file",
+                "write_file",
+            }
+        ),
+        requires_tool_error_recovery=True,
+    )
+    result = make_result(
+        {
+            "first.txt": "first",
+            "second.txt": "second",
+        },
+        tool_errors=(tool_error(),),
+    )
+
+    score = score_case(case, result)
+
+    assert score.passed is False
+    assert score.score == 0.0
+    assert "exactly one expected file" in score.reason

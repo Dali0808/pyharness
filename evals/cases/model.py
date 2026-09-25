@@ -21,6 +21,7 @@ class EvalCase:
         default_factory=dict,
     )
     required_tools: frozenset[str] = frozenset()
+    requires_tool_error_recovery: bool = False
 
     def __post_init__(self) -> None:
         if not self.case_id.strip():
@@ -40,6 +41,14 @@ class EvalCase:
         ):
             raise EvalCaseError(
                 "required tool names must not be empty"
+            )
+
+        if not isinstance(
+            self.requires_tool_error_recovery,
+            bool,
+        ):
+            raise EvalCaseError(
+                "requires_tool_error_recovery must be a boolean"
             )
 
         initial_files = self._validate_files(

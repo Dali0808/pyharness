@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from evals.cases.model import EvalCase
 from evals.runner import EvalRunResult
 
 
@@ -124,6 +125,7 @@ def score_json_file(
         reason=f"JSON content matches: {path}",
     )
 
+
 def score_tool_error_recovery(
     result: EvalRunResult,
     output_path: str,
@@ -167,4 +169,42 @@ def score_tool_error_recovery(
             "tool error was observed and the recovery "
             "output is correct"
         ),
+    )
+
+
+def score_case(
+    case: EvalCase,
+    result: EvalRunResult,
+) -> ScoreResult:
+    if not case.expected_files:
+        return ScoreResult(
+            passed=False,
+            score=0.0,
+            reason="case has no deterministic expected files",
+        )
+
+    if not case.requires_tool_error_recovery:
+        return score_file_contents(
+            result,
+            case.expected_files,
+        )
+
+    if len(case.expected_files) != 1:
+        return ScoreResult(
+            passed=False,
+            score=0.0,
+            reason=(
+                "tool error recovery cases require exactly "
+                "one expected file"
+            ),
+        )
+
+    output_path, expected_content = next(
+        iter(case.expected_files.items())
+    )
+
+    return score_tool_error_recovery(
+        result,
+        output_path,
+        expected_content,
     )
