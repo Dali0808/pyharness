@@ -9,7 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TypeAlias
 
-from agent.events import AgentEvent, ToolFinished
+from agent.events import AgentEvent, ToolFinished, ToolStarted
 from ai.provider import LLMProvider
 from ai.schemas import ToolResultMessage
 from coding_agent.cli import (
@@ -31,6 +31,7 @@ class EvalRunResult:
     elapsed_seconds: float
     final_files: Mapping[str, str]
     tool_errors: tuple[ToolResultMessage, ...]
+    tool_call_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,9 +84,12 @@ class EvalRunner:
 
             provider = provider_factory(config)
             tool_errors: list[ToolResultMessage] = []
+            tool_call_names: list[str] = []
             started_at = time.perf_counter()
 
             def collect_event(event: AgentEvent) -> None:
+                if isinstance(event, ToolStarted):
+                    tool_call_names.append(event.call.name)
                 if (
                         isinstance(event, ToolFinished)
                         and event.result.is_error
@@ -113,6 +117,7 @@ class EvalRunner:
                 elapsed_seconds=elapsed_seconds,
                 final_files=final_files,
                 tool_errors=tuple(tool_errors),
+                tool_call_names=tuple(tool_call_names),
             )
 
     @staticmethod

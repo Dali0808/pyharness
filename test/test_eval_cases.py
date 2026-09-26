@@ -24,7 +24,7 @@ def test_smoke_cases_have_non_empty_tasks() -> None:
     for case in SMOKE_CASES:
         assert case.case_id.strip()
         assert case.task.strip()
-        assert case.required_tools
+        assert case.expected_tool_names
 
 
 def test_case_rejects_absolute_seed_path() -> None:
@@ -38,7 +38,7 @@ def test_case_rejects_absolute_seed_path() -> None:
             initial_files={
                 str(Path("/tmp/outside.txt")): "secret",
             },
-            required_tools=frozenset({"read_file"}),
+            expected_tool_names=frozenset({"read_file"}),
         )
 
 
@@ -53,7 +53,7 @@ def test_case_rejects_parent_seed_path() -> None:
             initial_files={
                 "../outside.txt": "secret",
             },
-            required_tools=frozenset({"read_file"}),
+            expected_tool_names=frozenset({"read_file"}),
         )
 
 
@@ -68,7 +68,7 @@ def test_case_rejects_unsafe_expected_path() -> None:
             expected_files={
                 "output/../outside.txt": "secret",
             },
-            required_tools=frozenset({"write_file"}),
+            expected_tool_names=frozenset({"write_file"}),
         )
 
 
@@ -81,7 +81,7 @@ def test_case_preserves_seed_file_mapping() -> None:
         case_id="immutable-input",
         task="Read the input.",
         initial_files=initial_files,
-        required_tools=frozenset({"read_file"}),
+        expected_tool_names=frozenset({"read_file"}),
     )
 
     initial_files["input.txt"] = "changed"
@@ -100,7 +100,7 @@ def test_case_rejects_empty_case_id() -> None:
         EvalCase(
             case_id=" ",
             task="Do something.",
-            required_tools=frozenset({"read_file"}),
+            expected_tool_names=frozenset({"read_file"}),
         )
 
 
@@ -112,7 +112,7 @@ def test_case_rejects_empty_task() -> None:
         EvalCase(
             case_id="empty-task",
             task=" ",
-            required_tools=frozenset({"read_file"}),
+            expected_tool_names=frozenset({"read_file"}),
         )
 
 
@@ -124,22 +124,22 @@ def test_case_rejects_non_boolean_recovery_requirement() -> None:
         EvalCase(
             case_id="invalid-recovery-requirement",
             task="Recover from an error.",
-            required_tools=frozenset({"read_file"}),
+            expected_tool_names=frozenset({"read_file"}),
             requires_tool_error_recovery="yes",  # type: ignore[arg-type]
         )
 
 
 def test_smoke_catalog_covers_workspace_tool_workflows() -> None:
-    required_tools = {
+    expected_tool_names = {
         "read_file",
         "write_file",
         "list_dir",
     }
     covered_tools = set().union(
-        *(case.required_tools for case in SMOKE_CASES)
+        *(case.expected_tool_names for case in SMOKE_CASES)
     )
 
-    assert required_tools <= covered_tools
+    assert expected_tool_names <= covered_tools
 
 
 def test_smoke_catalog_contains_file_expectations() -> None:
@@ -192,7 +192,7 @@ def test_all_cases_define_deterministic_file_expectations() -> None:
 
 def test_all_cases_cover_required_workspace_workflows() -> None:
     covered_tools = set().union(
-        *(case.required_tools for case in ALL_CASES)
+        *(case.expected_tool_names for case in ALL_CASES)
     )
     recovery_cases = [
         case

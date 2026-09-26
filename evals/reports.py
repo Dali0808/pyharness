@@ -45,6 +45,16 @@ class CaseReport:
     usage: Usage
     tool_error_count: int
     estimated_cost: float | None
+    run_success: bool
+    artifact_success: bool
+    tool_coverage_passed: bool
+    expected_tool_names: tuple[str, ...]
+    observed_tool_names: tuple[str, ...]
+    missing_tool_names: tuple[str, ...]
+
+    @property
+    def task_success(self) -> bool:
+        return self.passed
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +69,10 @@ class EvaluationSummary:
     average_elapsed_seconds: float
     usage: Usage
     total_estimated_cost: float | None
+    run_success_cases: int
+    artifact_success_cases: int
+    tool_coverage_cases: int
+    tool_coverage_rate: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +144,19 @@ def build_report(
             ),
             usage=usage,
             total_estimated_cost=total_estimated_cost,
+            run_success_cases=sum(case.run_success for case in case_reports),
+            artifact_success_cases=sum(
+                case.artifact_success for case in case_reports
+            ),
+            tool_coverage_cases=sum(
+                case.tool_coverage_passed for case in case_reports
+            ),
+            tool_coverage_rate=(
+                sum(case.tool_coverage_passed for case in case_reports)
+                / total_cases
+                if total_cases
+                else 0.0
+            ),
         ),
         cases=case_reports,
     )
@@ -156,6 +183,10 @@ def render_markdown(report: EvaluationReport) -> str:
         f"| Total cases | {summary.total_cases} |",
         f"| Passed cases | {summary.passed_cases} |",
         f"| Failed cases | {summary.failed_cases} |",
+        f"| Run success cases | {summary.run_success_cases} |",
+        f"| Artifact success cases | {summary.artifact_success_cases} |",
+        f"| Tool coverage cases | {summary.tool_coverage_cases} |",
+        f"| Tool coverage rate | {summary.tool_coverage_rate:.2%} |",
         (
             "| Success rate | "
             f"{summary.success_rate:.2%} |"
@@ -197,14 +228,13 @@ def render_markdown(report: EvaluationReport) -> str:
         "## Cases",
         "",
         (
-            "| Case ID | Passed | Score | Steps | "
+            "| Case ID | Task success | Score | Run | Artifact | "
+            "Tool coverage | Expected tools | Observed tools | "
+            "Missing tools | Steps | "
             "Elapsed seconds | Total tokens | "
             "Tool errors | Estimated cost | Reason |"
         ),
-        (
-            "| --- | --- | --- | --- | --- | --- | "
-            "--- | --- | --- |"
-        ),
+        "| " + " | ".join(["---"] * 15) + " |",
     ]
 
     for case in report.cases:
@@ -213,6 +243,12 @@ def render_markdown(report: EvaluationReport) -> str:
             f"{_markdown_cell(case.case_id)} | "
             f"{'passed' if case.passed else 'failed'} | "
             f"{case.score:.2f} | "
+            f"{'passed' if case.run_success else 'failed'} | "
+            f"{'passed' if case.artifact_success else 'failed'} | "
+            f"{'passed' if case.tool_coverage_passed else 'failed'} | "
+            f"{_markdown_cell(', '.join(case.expected_tool_names))} | "
+            f"{_markdown_cell(', '.join(case.observed_tool_names) or 'none')} | "
+            f"{_markdown_cell(', '.join(case.missing_tool_names) or 'none')} | "
             f"{case.steps} | "
             f"{case.elapsed_seconds:.6f} | "
             f"{case.usage.total_tokens} | "
@@ -281,6 +317,12 @@ def _build_case_report(
             usage,
             pricing,
         ),
+        run_success=result.run_success,
+        artifact_success=result.artifact_score.passed,
+        tool_coverage_passed=result.tool_coverage.passed,
+        expected_tool_names=result.tool_coverage.expected_tool_names,
+        observed_tool_names=result.tool_coverage.observed_tool_names,
+        missing_tool_names=result.tool_coverage.missing_tool_names,
     )
 
 
@@ -349,6 +391,10 @@ def _report_data(
             "passed_cases": report.summary.passed_cases,
             "failed_cases": report.summary.failed_cases,
             "success_rate": report.summary.success_rate,
+            "run_success_cases": report.summary.run_success_cases,
+            "artifact_success_cases": report.summary.artifact_success_cases,
+            "tool_coverage_cases": report.summary.tool_coverage_cases,
+            "tool_coverage_rate": report.summary.tool_coverage_rate,
             "total_steps": report.summary.total_steps,
             "average_steps": report.summary.average_steps,
             "total_elapsed_seconds": (
@@ -366,8 +412,15 @@ def _report_data(
             {
                 "case_id": case.case_id,
                 "passed": case.passed,
+                "task_success": case.task_success,
                 "score": case.score,
                 "reason": case.reason,
+                "run_success": case.run_success,
+                "artifact_success": case.artifact_success,
+                "tool_coverage_passed": case.tool_coverage_passed,
+                "expected_tool_names": list(case.expected_tool_names),
+                "observed_tool_names": list(case.observed_tool_names),
+                "missing_tool_names": list(case.missing_tool_names),
                 "exit_code": case.exit_code,
                 "failure_code": case.failure_code,
                 "steps": case.steps,

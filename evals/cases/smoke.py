@@ -19,7 +19,7 @@ READ_FILE_CASE = EvalCase(
             "Prepare a short project status summary.\n"
         ),
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "read_file",
             "write_file",
@@ -37,7 +37,7 @@ WRITE_FILE_CASE = EvalCase(
     expected_files={
         "greeting.txt": "Hello from pyharness.\n",
     },
-    required_tools=frozenset({"write_file"}),
+    expected_tool_names=frozenset({"write_file"}),
 )
 
 
@@ -54,7 +54,7 @@ LIST_DIR_CASE = EvalCase(
     expected_files={
         "manifest.txt": "main.py\nutils.py\n",
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "list_dir",
             "write_file",
@@ -81,7 +81,7 @@ READ_THEN_WRITE_CASE = EvalCase(
             "pytest\n"
         ),
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "read_file",
             "write_file",
@@ -103,7 +103,7 @@ TOOL_ERROR_RECOVERY_CASE = EvalCase(
     expected_files={
         "recovered.txt": "Recovered successfully.\n",
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "read_file",
             "write_file",

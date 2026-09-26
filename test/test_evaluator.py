@@ -207,6 +207,9 @@ async def test_evaluator_scores_write_file_case_end_to_end() -> None:
     }
     assert result.score.passed is True
     assert result.score.score == 1.0
+    assert result.run_success is True
+    assert result.artifact_score.passed is True
+    assert result.tool_coverage.passed is True
 
 
 @pytest.mark.asyncio
@@ -297,7 +300,7 @@ async def test_evaluator_reports_failed_score_for_wrong_output() -> None:
         expected_files={
             "result.txt": "expected content",
         },
-        required_tools=frozenset({"write_file"}),
+        expected_tool_names=frozenset({"write_file"}),
     )
     provider = ScriptedProvider(
         [
@@ -319,3 +322,32 @@ async def test_evaluator_reports_failed_score_for_wrong_output() -> None:
     assert result.score.passed is False
     assert result.score.score == 0.0
     assert "mismatch" in result.score.reason
+
+
+@pytest.mark.asyncio
+async def test_evaluator_rejects_failed_run_after_correct_write() -> None:
+    case = EvalCase(
+        case_id="failed-after-write",
+        task="Create result.txt.",
+        expected_files={"result.txt": "expected content"},
+        expected_tool_names=frozenset({"write_file"}),
+    )
+    provider = ScriptedProvider(
+        [
+            write_file_response(
+                call_id="write-result",
+                path="result.txt",
+                content="expected content",
+            ),
+        ]
+    )
+
+    result = await Evaluator().evaluate_case(
+        case,
+        lambda _: provider,
+    )
+
+    assert result.run_success is False
+    assert result.artifact_score.passed is True
+    assert result.tool_coverage.passed is True
+    assert result.task_success is False

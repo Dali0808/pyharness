@@ -20,7 +20,7 @@ class EvalCase:
     expected_files: Mapping[str, str] = field(
         default_factory=dict,
     )
-    required_tools: frozenset[str] = frozenset()
+    expected_tool_names: frozenset[str] = frozenset()
     requires_tool_error_recovery: bool = False
 
     def __post_init__(self) -> None:
@@ -30,17 +30,17 @@ class EvalCase:
         if not self.task.strip():
             raise EvalCaseError("task must not be empty")
 
-        if not self.required_tools:
+        if not self.expected_tool_names:
             raise EvalCaseError(
-                "required_tools must not be empty"
+                "expected_tool_names must not be empty"
             )
 
         if any(
             not tool_name.strip()
-            for tool_name in self.required_tools
+            for tool_name in self.expected_tool_names
         ):
             raise EvalCaseError(
-                "required tool names must not be empty"
+                "expected tool names must not be empty"
             )
 
         if not isinstance(

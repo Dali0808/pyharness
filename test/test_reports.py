@@ -16,7 +16,7 @@ from evals.reports import (
     write_reports,
 )
 from evals.runner import EvalRunResult
-from evals.scorers import ScoreResult
+from evals.scorers import ScoreResult, ToolCoverageResult
 
 
 def make_evaluation_result(
@@ -29,6 +29,9 @@ def make_evaluation_result(
     elapsed_seconds: float = 0.1,
     usage: Usage | None = None,
     tool_error_count: int = 0,
+    artifact_success: bool | None = None,
+    expected_tool_names: tuple[str, ...] = ("write_file",),
+    observed_tool_names: tuple[str, ...] = ("write_file",),
 ) -> CaseEvaluationResult:
     failure = (
         None
@@ -53,6 +56,11 @@ def make_evaluation_result(
         steps=steps,
         usage=usage or Usage(),
     )
+    if artifact_success is None:
+        artifact_success = passed
+    missing_tool_names = tuple(
+        sorted(set(expected_tool_names) - set(observed_tool_names))
+    )
 
     return CaseEvaluationResult(
         case_id=case_id,
@@ -70,6 +78,17 @@ def make_evaluation_result(
             passed=passed,
             score=1.0 if passed else 0.0,
             reason=reason,
+        ),
+        artifact_score=ScoreResult(
+            passed=artifact_success,
+            score=1.0 if artifact_success else 0.0,
+            reason="artifact check",
+        ),
+        tool_coverage=ToolCoverageResult(
+            expected_tool_names=expected_tool_names,
+            observed_tool_names=observed_tool_names,
+            missing_tool_names=missing_tool_names,
+            passed=not missing_tool_names,
         ),
     )
 
@@ -110,6 +129,9 @@ def test_build_report_aggregates_case_results() -> None:
     assert report.summary.passed_cases == 1
     assert report.summary.failed_cases == 1
     assert report.summary.success_rate == 0.5
+    assert report.summary.run_success_cases == 1
+    assert report.summary.artifact_success_cases == 1
+    assert report.summary.tool_coverage_cases == 2
     assert report.summary.total_steps == 6
     assert report.summary.average_steps == 3.0
     assert report.summary.total_elapsed_seconds == pytest.approx(
@@ -149,6 +171,33 @@ def test_build_report_preserves_failed_case_details() -> None:
     assert case.steps == 3
     assert case.elapsed_seconds == 0.25
     assert case.tool_error_count == 2
+    assert case.run_success is False
+    assert case.artifact_success is False
+
+
+def test_report_separates_run_artifact_and_tool_coverage() -> None:
+    result = make_evaluation_result(
+        case_id="failed-after-write",
+        passed=False,
+        reason="run failed before task completed",
+        exit_code=1,
+        artifact_success=True,
+        expected_tool_names=("read_file", "write_file"),
+        observed_tool_names=("write_file",),
+    )
+
+    report = build_report([result])
+    case = report.cases[0]
+    data = json.loads(render_json(report))
+
+    assert case.passed is False
+    assert case.run_success is False
+    assert case.artifact_success is True
+    assert case.tool_coverage_passed is False
+    assert case.missing_tool_names == ("read_file",)
+    assert report.summary.tool_coverage_rate == 0.0
+    assert data["cases"][0]["missing_tool_names"] == ["read_file"]
+    assert "| Tool coverage rate | 0.00% |" in render_markdown(report)
 
 
 def test_build_report_leaves_cost_empty_without_pricing() -> None:

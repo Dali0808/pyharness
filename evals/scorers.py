@@ -16,6 +16,37 @@ class ScoreResult:
     reason: str
 
 
+@dataclass(frozen=True, slots=True)
+class ToolCoverageResult:
+    expected_tool_names: tuple[str, ...]
+    observed_tool_names: tuple[str, ...]
+    missing_tool_names: tuple[str, ...]
+    passed: bool
+
+
+def run_succeeded(result: EvalRunResult) -> bool:
+    task_result = result.task_result
+    return (
+        task_result.exit_code == 0
+        and task_result.run_result.failure is None
+    )
+
+
+def score_tool_coverage(
+    case: EvalCase,
+    result: EvalRunResult,
+) -> ToolCoverageResult:
+    expected = tuple(sorted(case.expected_tool_names))
+    observed = tuple(sorted(set(result.tool_call_names)))
+    missing = tuple(sorted(set(expected) - set(observed)))
+    return ToolCoverageResult(
+        expected_tool_names=expected,
+        observed_tool_names=observed,
+        missing_tool_names=missing,
+        passed=not missing,
+    )
+
+
 def score_file_exists(
     result: EvalRunResult,
     paths: Sequence[str],
@@ -131,7 +162,7 @@ def score_tool_error_recovery(
     output_path: str,
     expected_content: str,
 ) -> ScoreResult:
-    if result.task_result.exit_code != 0:
+    if not run_succeeded(result):
         return ScoreResult(
             passed=False,
             score=0.0,
@@ -183,13 +214,7 @@ def score_case(
             reason="case has no deterministic expected files",
         )
 
-    if not case.requires_tool_error_recovery:
-        return score_file_contents(
-            result,
-            case.expected_files,
-        )
-
-    if len(case.expected_files) != 1:
+    if case.requires_tool_error_recovery and len(case.expected_files) != 1:
         return ScoreResult(
             passed=False,
             score=0.0,
@@ -199,12 +224,21 @@ def score_case(
             ),
         )
 
-    output_path, expected_content = next(
-        iter(case.expected_files.items())
-    )
+    if case.requires_tool_error_recovery:
+        output_path, expected_content = next(
+            iter(case.expected_files.items())
+        )
+        return score_tool_error_recovery(
+            result,
+            output_path,
+            expected_content,
+        )
 
-    return score_tool_error_recovery(
-        result,
-        output_path,
-        expected_content,
-    )
+    if not run_succeeded(result):
+        return ScoreResult(
+            passed=False,
+            score=0.0,
+            reason="run failed before task completed",
+        )
+
+    return score_file_contents(result, case.expected_files)

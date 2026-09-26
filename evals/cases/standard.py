@@ -15,7 +15,7 @@ COPY_SINGLE_LINE_CASE = EvalCase(
     expected_files={
         "copied.txt": "One line of text.\n",
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "read_file",
             "write_file",
@@ -44,7 +44,7 @@ COPY_MULTILINE_CASE = EvalCase(
             "Third note.\n"
         ),
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "read_file",
             "write_file",
@@ -65,7 +65,7 @@ COPY_UNICODE_CASE = EvalCase(
     expected_files={
         "greeting-copy.txt": "Hello, 世界!\n",
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "read_file",
             "write_file",
@@ -86,7 +86,7 @@ COPY_EMPTY_FILE_CASE = EvalCase(
     expected_files={
         "empty-copy.txt": "",
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "read_file",
             "write_file",
@@ -107,7 +107,7 @@ OVERWRITE_FILE_CASE = EvalCase(
     expected_files={
         "draft.txt": "Final version.\n",
     },
-    required_tools=frozenset({"write_file"}),
+    expected_tool_names=frozenset({"write_file"}),
 )
 
 
@@ -126,7 +126,7 @@ CREATE_MULTILINE_FILE_CASE = EvalCase(
             "Fixed workspace isolation\n"
         ),
     },
-    required_tools=frozenset({"write_file"}),
+    expected_tool_names=frozenset({"write_file"}),
 )
 
 
@@ -148,7 +148,7 @@ COPY_NESTED_FILE_CASE = EvalCase(
             "retries=3\n"
         ),
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "read_file",
             "write_file",
@@ -170,7 +170,7 @@ COMBINE_TWO_FILES_CASE = EvalCase(
     expected_files={
         "combined.txt": "First.\nSecond.\n",
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "read_file",
             "write_file",
@@ -196,7 +196,7 @@ COMBINE_WITH_SEPARATOR_CASE = EvalCase(
             "Right side.\n"
         ),
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "read_file",
             "write_file",
@@ -225,7 +225,7 @@ COPY_CONFIG_BACKUP_CASE = EvalCase(
             "debug=false\n"
         ),
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "read_file",
             "write_file",
@@ -250,7 +250,7 @@ LIST_ROOT_ENTRIES_CASE = EvalCase(
             "dir: docs\n"
         ),
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "list_dir",
             "write_file",
@@ -275,7 +275,7 @@ LIST_NESTED_ENTRIES_CASE = EvalCase(
             "file: two.txt\n"
         ),
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "list_dir",
             "write_file",
@@ -300,7 +300,7 @@ LIST_DIRECTORY_WITH_CHILD_CASE = EvalCase(
             "dir: src\n"
         ),
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "list_dir",
             "write_file",
@@ -327,7 +327,7 @@ LIST_DOCUMENT_ENTRIES_CASE = EvalCase(
             "file: todo.md\n"
         ),
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "list_dir",
             "write_file",
@@ -351,7 +351,7 @@ TOOL_ERROR_RECOVERY_MISSING_FILE_CASE = EvalCase(
             "Recovered from missing file.\n"
         ),
     },
-    required_tools=frozenset(
+    expected_tool_names=frozenset(
         {
             "read_file",
             "write_file",

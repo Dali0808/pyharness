@@ -86,7 +86,7 @@ def make_write_case() -> EvalCase:
         expected_files={
             "result.txt": "generated content\n",
         },
-        required_tools=frozenset({"write_file"}),
+        expected_tool_names=frozenset({"write_file"}),
     )
 
 
@@ -145,6 +145,9 @@ async def test_run_evaluation_evaluates_selected_cases_and_builds_report() -> No
     assert run.report.summary.passed_cases == 1
     assert run.report.summary.success_rate == 1.0
     assert run.report.cases[0].case_id == case.case_id
+    assert run.report.cases[0].run_success is True
+    assert run.report.cases[0].artifact_success is True
+    assert run.report.cases[0].tool_coverage_passed is True
 
 
 @pytest.mark.asyncio
@@ -170,6 +173,9 @@ async def test_run_evaluation_writes_requested_reports(
     assert run.report.summary.total_cases == 1
     assert json_data["summary"]["total_cases"] == 1
     assert json_data["cases"][0]["case_id"] == case.case_id
+    assert json_data["cases"][0]["observed_tool_names"] == [
+        "write_file"
+    ]
     assert "# Evaluation Report" in markdown
     assert case.case_id in markdown
 

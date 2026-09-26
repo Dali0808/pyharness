@@ -90,7 +90,7 @@ async def test_runner_seeds_initial_files() -> None:
         initial_files={
             "nested/input/task.txt": "seed content",
         },
-        required_tools=frozenset({"read_file"}),
+        expected_tool_names=frozenset({"read_file"}),
     )
     provider_configs: list[CliConfig] = []
 
@@ -132,7 +132,7 @@ async def test_runner_calls_run_task_with_case_task() -> None:
     case = EvalCase(
         case_id="task-forwarding",
         task="Complete this exact evaluation task.",
-        required_tools=frozenset({"read_file"}),
+        expected_tool_names=frozenset({"read_file"}),
     )
     recorder = ProviderFactoryRecorder(
         provider=ScriptedProvider(
@@ -164,7 +164,7 @@ async def test_runner_returns_final_workspace_files() -> None:
         expected_files={
             "result.txt": "generated content",
         },
-        required_tools=frozenset({"write_file"}),
+        expected_tool_names=frozenset({"write_file"}),
     )
     provider = ScriptedProvider(
         [
@@ -186,6 +186,7 @@ async def test_runner_returns_final_workspace_files() -> None:
     assert result.final_files == {
         "result.txt": "generated content",
     }
+    assert result.tool_call_names == ("write_file",)
 
 
 @pytest.mark.asyncio
@@ -193,12 +194,12 @@ async def test_runner_isolates_case_workspaces() -> None:
     first_case = EvalCase(
         case_id="first-case",
         task="Create a file.",
-        required_tools=frozenset({"write_file"}),
+        expected_tool_names=frozenset({"write_file"}),
     )
     second_case = EvalCase(
         case_id="second-case",
         task="Finish without creating files.",
-        required_tools=frozenset({"read_file"}),
+        expected_tool_names=frozenset({"read_file"}),
     )
 
     first_provider = ScriptedProvider(
@@ -257,7 +258,7 @@ async def test_runner_closes_provider_after_run() -> None:
     case = EvalCase(
         case_id="provider-close",
         task="Complete the task.",
-        required_tools=frozenset({"read_file"}),
+        expected_tool_names=frozenset({"read_file"}),
     )
     provider = ClosableScriptedProvider(
         [final_response()],
@@ -277,7 +278,7 @@ async def test_runner_collects_tool_errors() -> None:
     case = EvalCase(
         case_id="collect-tool-error",
         task="Recover from a failed tool call.",
-        required_tools=frozenset({"read_file"}),
+        expected_tool_names=frozenset({"read_file"}),
     )
     provider = ScriptedProvider(
         [
@@ -295,3 +296,4 @@ async def test_runner_collects_tool_errors() -> None:
     assert len(result.tool_errors) == 1
     assert result.tool_errors[0].is_error is True
     assert result.tool_errors[0].tool_name == "missing_tool"
+    assert result.tool_call_names == ("missing_tool",)

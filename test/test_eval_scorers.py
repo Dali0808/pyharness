@@ -12,6 +12,7 @@ from evals.scorers import (
     score_file_exists,
     score_json_file,
     score_tool_error_recovery,
+    score_tool_coverage,
 )
 
 
@@ -20,6 +21,7 @@ def make_result(
     *,
     exit_code: int = 0,
     tool_errors: tuple[ToolResultMessage, ...] = (),
+    tool_call_names: tuple[str, ...] = (),
 ) -> EvalRunResult:
     if exit_code == 0:
         run_result = RunResult(
@@ -47,6 +49,7 @@ def make_result(
         elapsed_seconds=0.01,
         final_files=files,
         tool_errors=tool_errors,
+        tool_call_names=tool_call_names,
     )
 
 
@@ -314,7 +317,7 @@ def test_score_case_uses_file_content_scoring() -> None:
         expected_files={
             "result.txt": "expected content",
         },
-        required_tools=frozenset({"write_file"}),
+        expected_tool_names=frozenset({"write_file"}),
     )
     result = make_result(
         {
@@ -331,6 +334,60 @@ def test_score_case_uses_file_content_scoring() -> None:
     )
 
 
+def test_score_case_rejects_failed_run_with_correct_artifact() -> None:
+    case = EvalCase(
+        case_id="failed-after-write",
+        task="Create result.txt.",
+        expected_files={"result.txt": "expected content"},
+        expected_tool_names=frozenset({"write_file"}),
+    )
+    result = make_result(
+        {"result.txt": "expected content"},
+        exit_code=1,
+        tool_call_names=("write_file",),
+    )
+
+    assert score_file_contents(result, case.expected_files).passed is True
+    assert score_tool_coverage(case, result).passed is True
+    assert score_case(case, result).passed is False
+    assert "run failed" in score_case(case, result).reason
+
+
+def test_tool_coverage_does_not_determine_task_success() -> None:
+    case = EvalCase(
+        case_id="alternate-route",
+        task="Create result.txt.",
+        expected_files={"result.txt": "expected content"},
+        expected_tool_names=frozenset({"read_file", "write_file"}),
+    )
+    result = make_result(
+        {"result.txt": "expected content"},
+        tool_call_names=("write_file",),
+    )
+
+    assert score_case(case, result).passed is True
+    assert score_tool_coverage(case, result).missing_tool_names == (
+        "read_file",
+    )
+    assert score_tool_coverage(case, result).passed is False
+
+
+def test_tool_call_with_wrong_artifact_does_not_pass_task() -> None:
+    case = EvalCase(
+        case_id="wrong-artifact",
+        task="Create result.txt.",
+        expected_files={"result.txt": "expected content"},
+        expected_tool_names=frozenset({"write_file"}),
+    )
+    result = make_result(
+        {"result.txt": "wrong content"},
+        tool_call_names=("write_file",),
+    )
+
+    assert score_tool_coverage(case, result).passed is True
+    assert score_case(case, result).passed is False
+
+
 def test_score_case_uses_error_recovery_scoring() -> None:
     case = EvalCase(
         case_id="recovery-case",
@@ -338,7 +395,7 @@ def test_score_case_uses_error_recovery_scoring() -> None:
         expected_files={
             "recovered.txt": "Recovered.\n",
         },
-        required_tools=frozenset(
+        expected_tool_names=frozenset(
             {
                 "read_file",
                 "write_file",
@@ -363,7 +420,7 @@ def test_score_case_rejects_missing_expectations() -> None:
     case = EvalCase(
         case_id="unscorable-case",
         task="Do something.",
-        required_tools=frozenset({"read_file"}),
+        expected_tool_names=frozenset({"read_file"}),
     )
     result = make_result({})
 
@@ -382,7 +439,7 @@ def test_score_case_rejects_recovery_case_with_multiple_outputs() -> None:
             "first.txt": "first",
             "second.txt": "second",
         },
-        required_tools=frozenset(
+        expected_tool_names=frozenset(
             {
                 "read_file",
                 "write_file",
