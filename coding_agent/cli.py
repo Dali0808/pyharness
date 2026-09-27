@@ -23,7 +23,7 @@ from agent.events import (
     ToolStarted,
     EventHandler,
 )
-from agent.loop import AgentRunner, RunResult
+from agent.loop import AgentRunner, RunFailure, RunResult
 from agent.tools import ToolRegistry
 from agent.context import ContextManager
 from ai.openai_compatible import OpenAICompatibleProvider
@@ -34,6 +34,7 @@ from ai.schemas import (
     ModelSpec,
     TextPart,
     UserMessage,
+    Usage,
     utc_now,
 )
 from coding_agent.builtins import (
@@ -44,20 +45,20 @@ from coding_agent.builtins import (
 )
 from coding_agent.session import (
     JsonlSessionStore,
+    SessionCompatibilityError,
+    SessionFormatError,
     SessionMetadata,
+    validate_session_metadata,
 )
 from coding_agent.compaction import (
-    CompactedContextManager,
     ModelSummaryGenerator,
-    compact_history,
-    should_compact,
+    RequestBudgetManager,
 )
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a coding assistant. Work only through the available "
     "workspace tools."
 )
-DEFAULT_KEEP_RECENT_TURNS = 2
 
 @dataclass(frozen=True, slots=True)
 class CliConfig:
@@ -76,11 +77,6 @@ class CliConfig:
 class TaskRunResult:
     exit_code: int
     run_result: RunResult
-
-@dataclass(frozen=True, slots=True)
-class PreparedContext:
-    context_manager: ContextManager
-    compacted_count: int = 0
 
 ProviderFactory: TypeAlias = Callable[[CliConfig], LLMProvider]
 
@@ -193,7 +189,13 @@ def prepare_session(
     store = JsonlSessionStore(config.session_path)
 
     if config.session_path.exists():
-        snapshot = store.load()
+        validate_session_metadata(
+            store.load_metadata(),
+            workspace=config.workspace,
+            model=model,
+            system_prompt=config.system_prompt,
+        )
+        snapshot = store.recover()
         return store, list(snapshot.messages)
 
     metadata = SessionMetadata(
@@ -212,6 +214,8 @@ def handle_run_event(
     event: AgentEvent,
     output: TextIO,
     session_store: JsonlSessionStore | None,
+    *,
+    run_id: str | None = None,
 ) -> None:
     print(render_event(event), file=output)
 
@@ -219,53 +223,13 @@ def handle_run_event(
         return
 
     if isinstance(event, ModelResponded):
-        session_store.append_message(event.response.message)
+        session_store.append_message(
+            event.response.message, run_id=run_id
+        )
     elif isinstance(event, ToolFinished):
-        session_store.append_message(event.result)
-
-
-async def prepare_context_manager(
-    config: CliConfig,
-    model: ModelSpec,
-    models: ModelRegistry,
-    restored_messages: Sequence[Message],
-    user_message: UserMessage,
-) -> PreparedContext:
-    candidate_messages = [
-        *restored_messages,
-        user_message,
-    ]
-
-    if not should_compact(
-        config.system_prompt,
-        candidate_messages,
-        context_window=model.context_window,
-    ):
-        return PreparedContext(
-            context_manager=ContextManager(),
+        session_store.append_message(
+            event.result, run_id=run_id
         )
-
-    compaction = await compact_history(
-        candidate_messages,
-        keep_recent_turns=DEFAULT_KEEP_RECENT_TURNS,
-        summarizer=ModelSummaryGenerator(
-            models,
-            model,
-        ),
-    )
-
-    if compaction.compacted_count == 0:
-        return PreparedContext(
-            context_manager=ContextManager(),
-        )
-
-    return PreparedContext(
-        context_manager=CompactedContextManager(
-            summary_message=compaction.messages[0],
-            compacted_count=compaction.compacted_count,
-        ),
-        compacted_count=compaction.compacted_count,
-    )
 
 
 async def run_task(
@@ -280,10 +244,17 @@ async def run_task(
         id=config.model_id,
         context_window=config.context_window,
     )
-    session_store, restored_messages = prepare_session(
-        config,
-        model,
-    )
+    try:
+        session_store, restored_messages = prepare_session(config, model)
+    except (SessionCompatibilityError, SessionFormatError, OSError) as exc:
+        failure = RunFailure(code="session_error", message=str(exc))
+        print(f"failed ({failure.code}): {failure.message}", file=output)
+        return TaskRunResult(
+            exit_code=1,
+            run_result=RunResult(
+                final_message=None, failure=failure, steps=0, usage=Usage()
+            ),
+        )
 
     models = ModelRegistry()
     models.register(model, provider)
@@ -294,46 +265,47 @@ async def run_task(
     tools.register(create_list_dir_tool(config.workspace))
 
     user_message = UserMessage(content=config.task)
-    prepared_context = await prepare_context_manager(
-        config,
-        model,
-        models,
-        restored_messages,
-        user_message,
-    )
+    budget: RequestBudgetManager | None = None
+    if model.context_window is not None:
+        def report_compaction(count: int) -> None:
+            noun = "message" if count == 1 else "messages"
+            print(f"context compacted: summarized {count} {noun}", file=output)
 
-    if prepared_context.compacted_count > 0:
-        message_word = (
-            "message"
-            if prepared_context.compacted_count == 1
-            else "messages"
-        )
-        print(
-            "context compacted: summarized "
-            f"{prepared_context.compacted_count} {message_word}",
-            file=output,
+        budget = RequestBudgetManager(
+            context_window=model.context_window,
+            summarizer=ModelSummaryGenerator(
+                models,
+                model,
+                max_tokens=max(32, min(512, model.context_window // 8)),
+            ),
+            on_compaction=report_compaction,
         )
 
     state = AgentState(
         system_prompt=config.system_prompt,
         model=model,
         tools=tools,
-        context_manager=prepared_context.context_manager,
+        context_manager=budget or ContextManager(),
         max_steps=config.max_steps,
+        max_output_tokens=budget.output_reserve if budget else None,
         messages=restored_messages,
     )
     runner = AgentRunner(models)
 
-
-
+    run_id = uuid4().hex
+    turn_id = uuid4().hex
     if session_store is not None:
-        session_store.append_message(user_message)
+        session_store.start_run(run_id, turn_id)
+        session_store.append_message(
+            user_message, run_id=run_id
+        )
 
     def handle_event(event: AgentEvent) -> None:
         handle_run_event(
             event,
             output,
             session_store,
+            run_id=run_id,
         )
 
         if on_event is not None:
@@ -343,7 +315,20 @@ async def run_task(
         state,
         user_message,
         on_event=handle_event,
+        before_request=budget.prepare if budget is not None else None,
     )
+
+    if session_store is not None:
+        run_completed = result.failure is None and result.final_message is not None
+        session_store.end_run(
+            run_id,
+            "completed" if run_completed else "failed",
+            failure_code=(
+                result.failure.code
+                if result.failure
+                else (None if run_completed else "missing_final_message")
+            ),
+        )
 
     if result.failure is not None:
         print(

@@ -74,9 +74,9 @@ pyharness/
 | 文件 | 职责 |
 | --- | --- |
 | `coding_agent/builtins.py` | workspace 受限工具：`read_file`、`write_file`、`list_dir`，以及核心安全函数 `resolve_workspace_path()`（拒绝绝对路径/盘符锚点、`..` 段、以及解析后逃出 workspace 的符号链接）。 |
-| `coding_agent/session.py` | `JsonlSessionStore`：JSONL 会话持久化。首行为带版本号的 session header（`SessionMetadata`：session_id、created_at、workspace、system_prompt、model），其后每行一条消息记录。`create()` 用独占模式创建（不覆盖已有会话），`load()` 严格校验格式并抛出 `SessionFormatError`。 |
-| `coding_agent/compaction.py` | 上下文压缩：`estimate_context_tokens()`（按字节数估算 token）、`should_compact()`（超过 `context_window * trigger_ratio` 触发）、`partition_history()`（保留最近 N 个完整用户轮次）、`compact_history()`（把早期历史交给 summarizer 生成摘要消息）、`ModelSummaryGenerator`（用模型生成摘要，拒绝空/截断摘要）、`CompactedContextManager`（把摘要 + 未压缩尾部作为模型视图，同时保持完整历史不变）。 |
-| `coding_agent/cli.py` | 入口与编排：`parse_args()` 解析参数（task、`--workspace`、`--session`、`--provider-id`、`--model`、`--context-window`、`--base-url`、`--api-key-env`、`--system-prompt`、`--max-steps`）；`run_task()` 组装 provider/registry/tools/state，必要时先压缩恢复的历史，再运行 `AgentRunner`；`render_event()` 把事件渲染为人类可读文本；`main()` 支持注入 `provider_factory` 与 `output` 以便测试。 |
+| `coding_agent/session.py` | `JsonlSessionStore`：JSONL v2 会话持久化，记录 run/turn ID 与终态；严格校验工作区、模型和系统提示词，续接时迁移 v1，修复末尾中断记录，并给未完成工具调用写入“结果未知”的错误结果，避免自动重放。 |
+| `coding_agent/compaction.py` | `RequestBudgetManager` 在每次模型请求前估算系统提示、消息与工具 Schema，并留出输出预算；按完整轮次分段摘要，必要时仅在请求视图中截短工具结果。完整历史保持不变，摘要失败返回结构化失败。原有压缩工具函数保留供独立使用。 |
+| `coding_agent/cli.py` | 入口与编排：`parse_args()` 解析任务与模型参数；`run_task()` 校验和恢复 Session，记录运行终态，组装 Provider、工具与 Agent，并使用每次请求前的预算检查；`render_event()` 渲染事件。 |
 
 ---
 
@@ -98,7 +98,7 @@ coding_agent  ──►  agent  ──►  ai
 关键抽象边界：
 
 - **`LLMProvider` 协议**：`agent` 只依赖协议，不依赖具体 HTTP 实现，因此可以注入 `ScriptedProvider` 做测试。
-- **`ContextManager` 基类**：`agent` 只依赖 `select()` 接口，`coding_agent.compaction.CompactedContextManager` 通过继承扩展，无需修改 `agent`。
+- **`ContextManager` 基类**：`agent` 通过 `select()` 获取模型视图；`RequestBudgetManager` 继承该接口，并通过运行前钩子在每次模型请求前更新视图。
 - **`SummaryGenerator` 协议**：`compact_history()` 只依赖可调用对象，测试中可用 `RecordingSummarizer` 替代真实模型。
 - **事件回调 `EventHandler`**：`AgentRunner` 通过 `on_event` 向外广播，CLI 用它渲染输出并写入会话文件，二者解耦。
 
@@ -131,9 +131,9 @@ pytest test/test_cli.py::test_main_runs_workspace_tool_task_and_renders_events
 | `test/test_builtins.py` | `resolve_workspace_path()` 的路径安全（相对路径通过、`..` 拒绝、绝对路径拒绝、符号链接逃逸拒绝）；`read_file` / `write_file` / `list_dir` 的正常与错误路径（UTF-8 中文内容、覆盖写、缺失父目录、未知参数等）。符号链接不可用时用 `pytest.skip` 跳过。 |
 | `test/test_context.py` | `ContextManager` 的裁剪语义（不修改原历史、返回新列表、非正数上限报错）与 `AgentState` 的完整历史 / 裁剪视图分离。 |
 | `test/test_loop.py` | `AgentRunner` 的完整工具调用循环、事件序列、`Usage` 累加、工具错误回灌后可恢复、`max_steps_exceeded`、`response_truncated`、`provider_error` 时保留历史。 |
-| `test/test_compaction.py` | `partition_history` / `estimate_context_tokens` / `should_compact` / `compact_history` / `ModelSummaryGenerator` / `CompactedContextManager` 的行为与边界，以及压缩视图与完整状态分离的端到端验证。 |
-| `test/test_session.py` | JSONL 会话的创建、追加、往返一致性、拒绝覆盖、缺失文件、空文件、非法 JSON 行号、header 位置、重复 header、未知版本号。 |
-| `test/test_cli.py` | 端到端 CLI：参数解析与校验、事件渲染、退出码、会话创建/恢复/跨运行续写、压缩在 Agent 运行前触发且摘要不写入会话文件。 |
+| `test/test_compaction.py` | 历史分段、工具 Schema 预算、长历史分段摘要、摘要过长，以及完整历史与模型视图分离。 |
+| `test/test_session.py` | JSONL v2 创建与往返、v1 迁移、配置冲突、工具执行前后和末尾写盘中断的恢复。 |
+| `test/test_cli.py` | CLI 会话创建、续接、配置冲突、运行状态、每次请求前预算检查、超大工具结果与摘要失败。 |
 
 ### 5.3 测试策略要点
 

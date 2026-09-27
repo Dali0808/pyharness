@@ -16,6 +16,9 @@ FailureCode: TypeAlias = Literal[
     "max_steps_exceeded",
     "response_truncated",
     "provider_error",
+    "context_budget_exceeded",
+    "compaction_failed",
+    "session_error",
 ]
 
 

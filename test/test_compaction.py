@@ -6,6 +6,7 @@ import pytest
 
 from agent.agent import AgentState
 from agent.loop import AgentRunner
+from agent.loop import RequestPreparationError
 from agent.tools import ToolRegistry
 from ai.provider import ModelRegistry, ProviderError, ScriptedProvider
 from ai.schemas import (
@@ -17,6 +18,7 @@ from ai.schemas import (
     UserMessage,
     ChatResponse,
     ModelSpec,
+    ToolDefinition,
 )
 from coding_agent.compaction import (
     COMPACTION_SUMMARY_PREFIX,
@@ -28,6 +30,7 @@ from coding_agent.compaction import (
     SUMMARY_SYSTEM_PROMPT,
     SummaryGenerationError,
     CompactedContextManager,
+    RequestBudgetManager,
 )
 
 class RecordingSummarizer:
@@ -192,6 +195,87 @@ def test_estimate_context_tokens_includes_structured_tool_data(
     )
 
     assert tool_estimate > plain_estimate
+
+
+def test_estimate_context_tokens_includes_tool_schemas() -> None:
+    messages = [UserMessage(content="Use a tool.")]
+    without_tools = estimate_context_tokens("Prompt.", messages)
+    with_tools = estimate_context_tokens(
+        "Prompt.", messages,
+        tools=[ToolDefinition(
+            name="large_tool",
+            description="Detailed description " * 40,
+            parameters={"type": "object", "properties": {}},
+        )],
+    )
+
+    assert with_tools > without_tools
+
+
+@pytest.mark.asyncio
+async def test_budget_manager_summarizes_long_history_in_bounded_chunks() -> None:
+    summarizer = RecordingSummarizer("Earlier turns completed.")
+    manager = RequestBudgetManager(
+        context_window=1200, summarizer=summarizer
+    )
+    messages: list[Message] = []
+    for index in range(7):
+        messages.extend([
+            UserMessage(content=f"Task {index}: " + "u" * 180),
+            assistant_text("Answer: " + "a" * 180),
+        ])
+    messages.append(UserMessage(content="Current task."))
+    original = list(messages)
+    state = AgentState(
+        system_prompt="Continue.",
+        model=ModelSpec(
+            provider="scripted", id="test-model", context_window=1200
+        ),
+        tools=ToolRegistry(),
+        context_manager=manager,
+        messages=messages,
+    )
+
+    await manager.prepare(state)
+
+    assert len(summarizer.calls) >= 2
+    assert all(
+        estimate_context_tokens(
+            SUMMARY_SYSTEM_PROMPT, call, bytes_per_token=2
+        ) <= 600
+        for call in summarizer.calls
+    )
+    assert state.messages == original
+    assert len(state.selected_messages()) < len(original)
+
+
+@pytest.mark.asyncio
+async def test_budget_manager_rejects_oversized_summary_without_mutating_view() -> None:
+    manager = RequestBudgetManager(
+        context_window=1200,
+        summarizer=RecordingSummarizer("z" * 5000),
+    )
+    messages: list[Message] = []
+    for index in range(5):
+        messages.extend([
+            UserMessage(content=f"Old task {index}. " + "x" * 180),
+            assistant_text("Old answer. " + "y" * 180),
+        ])
+    messages.append(UserMessage(content="Current task."))
+    state = AgentState(
+        system_prompt="Continue.",
+        model=ModelSpec(
+            provider="scripted", id="test-model", context_window=1200
+        ),
+        tools=ToolRegistry(),
+        context_manager=manager,
+        messages=messages,
+    )
+
+    with pytest.raises(RequestPreparationError, match="summary is too long"):
+        await manager.prepare(state)
+
+    assert state.selected_messages() == messages
 
 
 def test_should_compact_at_configured_threshold(

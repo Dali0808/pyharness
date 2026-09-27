@@ -16,8 +16,10 @@ from ai.schemas import (
 
 from coding_agent.session import (
     JsonlSessionStore,
+    SessionCompatibilityError,
     SessionFormatError,
     SessionMetadata,
+    validate_session_metadata,
 )
 
 
@@ -53,7 +55,7 @@ def test_create_writes_versioned_session_header(
     record = json.loads(lines[0])
 
     assert record["type"] == "session"
-    assert record["version"] == 1
+    assert record["version"] == 2
     assert record["metadata"]["session_id"] == "session-001"
     assert record["metadata"]["workspace"] == str(
         tmp_path.resolve()
@@ -263,7 +265,7 @@ def test_load_rejects_unknown_format_version(
     header = json.loads(
         session_path.read_text(encoding="utf-8")
     )
-    header["version"] = 2
+    header["version"] = 3
     session_path.write_text(
         json.dumps(header, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -274,3 +276,173 @@ def test_load_rejects_unknown_format_version(
         match="invalid session record at line 1",
     ):
         store.load()
+
+
+def test_recover_closes_unfinished_tool_call_without_replaying_it(
+    tmp_path: Path,
+) -> None:
+    store = JsonlSessionStore(tmp_path / "session.jsonl")
+    store.create(make_metadata(tmp_path))
+    store.start_run("run-1", "turn-1")
+    store.append_message(
+        UserMessage(content="Write a file."),
+        run_id="run-1",
+    )
+    store.append_message(
+        AssistantMessage(content=[ToolCallPart(
+            id="write-1",
+            name="write_file",
+            arguments_json='{"path":"result.txt","content":"done"}',
+        )]),
+        run_id="run-1",
+    )
+
+    recovered = store.recover()
+
+    assert recovered.active_run is None
+    assert recovered.runs[-1].status == "interrupted"
+    assert recovered.pending_tool_calls == []
+    result = recovered.messages[-1]
+    assert isinstance(result, ToolResultMessage)
+    assert result.tool_call_id == "write-1"
+    assert result.is_error is True
+    assert "outcome is unknown" in result.content
+    assert store.recover().messages == recovered.messages
+
+
+def test_recover_after_durable_tool_result_does_not_duplicate_it(
+    tmp_path: Path,
+) -> None:
+    store = JsonlSessionStore(tmp_path / "session.jsonl")
+    store.create(make_metadata(tmp_path))
+    store.start_run("run-1", "turn-1")
+    store.append_message(
+        AssistantMessage(content=[ToolCallPart(
+            id="read-1", name="read_file", arguments_json="{}"
+        )]), run_id="run-1",
+    )
+    store.append_message(
+        ToolResultMessage(
+            tool_call_id="read-1", tool_name="read_file", content="done"
+        ), run_id="run-1",
+    )
+
+    recovered = store.recover()
+
+    assert recovered.runs[-1].status == "interrupted"
+    assert len(recovered.messages) == 2
+    assert recovered.pending_tool_calls == []
+
+
+def test_recover_repairs_only_a_torn_final_record(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path / "session.jsonl")
+    store.create(make_metadata(tmp_path))
+    store.start_run("run-1", "turn-1")
+    store.append_message(
+        AssistantMessage(content=[ToolCallPart(
+            id="read-1", name="read_file", arguments_json="{}"
+        )]), run_id="run-1",
+    )
+    with store.path.open("ab") as stream:
+        stream.write(b'{"type":"message","message":')
+
+    recovered = store.recover()
+
+    assert recovered.runs[-1].status == "interrupted"
+    assert recovered.pending_tool_calls == []
+    assert isinstance(recovered.messages[-1], ToolResultMessage)
+    assert store.load() == recovered
+
+
+def test_recover_finishes_valid_record_missing_newline(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path / "session.jsonl")
+    store.create(make_metadata(tmp_path))
+    store.append_message(UserMessage(content="Old task."))
+    store.path.write_bytes(store.path.read_bytes().rstrip(b"\n"))
+
+    recovered = store.recover()
+    store.append_message(UserMessage(content="New task."))
+
+    assert recovered.messages[0].content == "Old task."
+    assert len(store.load().messages) == 2
+
+
+def test_load_rejects_new_user_before_tool_result(tmp_path: Path) -> None:
+    store = JsonlSessionStore(tmp_path / "session.jsonl")
+    store.create(make_metadata(tmp_path))
+    store.append_message(AssistantMessage(content=[ToolCallPart(
+        id="read-1", name="read_file", arguments_json="{}"
+    )]))
+    store.append_message(UserMessage(content="Next task."))
+
+    with pytest.raises(SessionFormatError, match="pending tool results"):
+        store.load()
+
+
+def test_recover_migrates_v1_history_without_losing_messages(
+    tmp_path: Path,
+) -> None:
+    store = JsonlSessionStore(tmp_path / "session.jsonl")
+    metadata = make_metadata(tmp_path)
+    old_message = UserMessage(content="Old task.", timestamp=CREATED_AT)
+    store.path.write_text(
+        json.dumps({
+            "type": "session", "version": 1,
+            "metadata": metadata.model_dump(mode="json"),
+        }) + "\n" + json.dumps({
+            "type": "message",
+            "message": old_message.model_dump(mode="json"),
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    assert store.load().format_version == 1
+    recovered = store.recover()
+
+    assert recovered.format_version == 2
+    assert recovered.messages == [old_message]
+    assert recovered.runs == []
+
+
+def test_recover_migrates_v1_pending_call_with_unknown_outcome(
+    tmp_path: Path,
+) -> None:
+    store = JsonlSessionStore(tmp_path / "session.jsonl")
+    metadata = make_metadata(tmp_path)
+    call_message = AssistantMessage(content=[ToolCallPart(
+        id="old-write", name="write_file", arguments_json="{}"
+    )])
+    store.path.write_text(
+        json.dumps({
+            "type": "session", "version": 1,
+            "metadata": metadata.model_dump(mode="json"),
+        }) + "\n" + json.dumps({
+            "type": "message",
+            "message": call_message.model_dump(mode="json"),
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    recovered = store.recover()
+
+    assert recovered.format_version == 2
+    assert recovered.messages[0] == call_message
+    assert isinstance(recovered.messages[1], ToolResultMessage)
+    assert recovered.messages[1].is_error is True
+    assert recovered.pending_tool_calls == []
+
+
+def test_metadata_validation_explains_incompatible_fields(
+    tmp_path: Path,
+) -> None:
+    saved = make_metadata(tmp_path)
+    with pytest.raises(
+        SessionCompatibilityError,
+        match="workspace, model, system prompt",
+    ):
+        validate_session_metadata(
+            saved,
+            workspace=tmp_path / "different",
+            model=ModelSpec(provider="scripted", id="other-model"),
+            system_prompt="Different prompt.",
+        )

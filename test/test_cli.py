@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from io import StringIO
 from pathlib import Path
 from datetime import datetime, timezone
@@ -799,12 +800,12 @@ def test_main_compacts_restored_history_before_agent_run(
     model = ModelSpec(
         provider="scripted",
         id="test-model",
-        context_window=1,
+        context_window=1600,
     )
     previous_messages = [
-        UserMessage(content="First task."),
+        UserMessage(content="First task. " + "x" * 500),
         AssistantMessage(
-            content=[TextPart(text="First task completed.")],
+            content=[TextPart(text="First task completed. " + "y" * 500)],
         ),
         UserMessage(content="Second task."),
         AssistantMessage(
@@ -867,7 +868,7 @@ def test_main_compacts_restored_history_before_agent_run(
             "--system-prompt",
             system_prompt,
             "--context-window",
-            "1",
+            "1600",
             "--session",
             "history.jsonl",
         ],
@@ -945,3 +946,199 @@ def test_main_compacts_restored_history_before_agent_run(
     )
 
 
+def test_main_rejects_incompatible_session_without_changing_it(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = JsonlSessionStore(workspace / "history.jsonl")
+    store.create(SessionMetadata(
+        session_id="existing",
+        created_at=datetime(2026, 9, 17, tzinfo=timezone.utc),
+        workspace=str(workspace.resolve()),
+        system_prompt="Saved prompt.",
+        model=ModelSpec(provider="scripted", id="test-model"),
+    ))
+    before = store.path.read_bytes()
+    provider = ScriptedProvider([])
+    output = StringIO()
+
+    exit_code = main(
+        [
+            "Continue.", "--workspace", str(workspace),
+            "--provider-id", "scripted", "--model", "test-model",
+            "--session", "history.jsonl",
+        ],
+        provider_factory=lambda _: provider,
+        output=output,
+    )
+
+    assert exit_code == 1
+    assert "session_error" in output.getvalue()
+    assert "system prompt" in output.getvalue()
+    assert provider.requests == []
+    assert store.path.read_bytes() == before
+
+
+def test_main_recovers_interrupted_tool_call_before_next_request(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = JsonlSessionStore(workspace / "history.jsonl")
+    store.create(SessionMetadata(
+        session_id="existing",
+        created_at=datetime(2026, 9, 17, tzinfo=timezone.utc),
+        workspace=str(workspace.resolve()),
+        system_prompt="Saved prompt.",
+        model=ModelSpec(provider="scripted", id="test-model"),
+    ))
+    store.start_run("old-run", "old-turn")
+    store.append_message(
+        UserMessage(content="Write a file."),
+        run_id="old-run",
+    )
+    store.append_message(
+        AssistantMessage(content=[ToolCallPart(
+            id="write-1", name="write_file",
+            arguments_json='{"path":"result.txt","content":"done"}',
+        )]), run_id="old-run",
+    )
+    provider = ScriptedProvider([ChatResponse(
+        message=AssistantMessage(content=[TextPart(text="Continuing.")]),
+        finish_reason="stop",
+    )])
+
+    exit_code = main(
+        [
+            "Continue safely.", "--workspace", str(workspace),
+            "--provider-id", "scripted", "--model", "test-model",
+            "--system-prompt", "Saved prompt.",
+            "--session", "history.jsonl",
+        ],
+        provider_factory=lambda _: provider,
+        output=StringIO(),
+    )
+
+    assert exit_code == 0
+    messages = provider.requests[0].messages
+    assert [message.role for message in messages] == [
+        "user", "assistant", "tool_result", "user"
+    ]
+    assert isinstance(messages[2], ToolResultMessage)
+    assert messages[2].is_error is True
+    snapshot = store.load()
+    assert [run.status for run in snapshot.runs] == [
+        "interrupted", "completed"
+    ]
+
+
+def test_run_bounds_large_tool_result_before_next_model_request(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "large.txt").write_text("x" * 10000, encoding="utf-8")
+    provider = ScriptedProvider([
+        ChatResponse(
+            message=AssistantMessage(content=[ToolCallPart(
+                id="read-1", name="read_file",
+                arguments_json='{"path":"large.txt"}',
+            )]), finish_reason="tool_calls",
+        ),
+        ChatResponse(
+            message=AssistantMessage(content=[TextPart(text="Done.")]),
+            finish_reason="stop",
+        ),
+    ])
+    config = parse_args([
+        "Read the file.", "--workspace", str(workspace),
+        "--provider-id", "scripted", "--model", "test-model",
+        "--context-window", "2000", "--session", "history.jsonl",
+    ])
+
+    result = asyncio.run(run_task(config, provider, StringIO()))
+
+    assert result.exit_code == 0
+    assert len(provider.requests) == 2
+    first_result = provider.requests[1].messages[-1]
+    assert isinstance(first_result, ToolResultMessage)
+    preceding = provider.requests[1].messages[-2]
+    assert isinstance(preceding, AssistantMessage)
+    assert isinstance(preceding.content[0], ToolCallPart)
+    assert preceding.content[0].id == first_result.tool_call_id
+    assert len(first_result.content) < 10000
+    assert "truncated in context view" in first_result.content
+    assert provider.requests[1].max_tokens is not None
+    stored = JsonlSessionStore(workspace / "history.jsonl").load()
+    full_result = stored.messages[2]
+    assert isinstance(full_result, ToolResultMessage)
+    assert full_result.content == "x" * 10000
+
+
+def test_summary_failure_is_structured_and_preserves_history(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = JsonlSessionStore(workspace / "history.jsonl")
+    store.create(SessionMetadata(
+        session_id="existing",
+        created_at=datetime(2026, 9, 17, tzinfo=timezone.utc),
+        workspace=str(workspace.resolve()),
+        system_prompt="Continue the coding task.",
+        model=ModelSpec(
+            provider="scripted", id="test-model", context_window=1600
+        ),
+    ))
+    previous = [
+        UserMessage(content="First task. " + "x" * 500),
+        AssistantMessage(content=[TextPart(text="Answer. " + "y" * 500)]),
+        UserMessage(content="Second task."),
+        AssistantMessage(content=[TextPart(text="Second answer.")]),
+    ]
+    for message in previous:
+        store.append_message(message)
+    provider = ScriptedProvider([])
+    config = parse_args([
+        "Third task.", "--workspace", str(workspace),
+        "--provider-id", "scripted", "--model", "test-model",
+        "--system-prompt", "Continue the coding task.",
+        "--context-window", "1600", "--session", "history.jsonl",
+    ])
+
+    result = asyncio.run(run_task(config, provider, StringIO()))
+
+    assert result.exit_code == 1
+    assert result.run_result.failure is not None
+    assert result.run_result.failure.code == "compaction_failed"
+    assert provider.requests[0].system_prompt == SUMMARY_SYSTEM_PROMPT
+    snapshot = store.load()
+    assert snapshot.messages[:4] == previous
+    assert len(snapshot.messages) == 5
+    assert snapshot.runs[-1].status == "failed"
+    assert all(
+        not isinstance(message, UserMessage)
+        or not message.content.startswith(COMPACTION_SUMMARY_PREFIX)
+        for message in snapshot.messages
+    )
+
+
+def test_tiny_context_window_fails_before_model_request(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    provider = ScriptedProvider([])
+    config = parse_args([
+        "Do work.", "--workspace", str(workspace),
+        "--provider-id", "scripted", "--model", "test-model",
+        "--context-window", "1",
+    ])
+
+    result = asyncio.run(run_task(config, provider, StringIO()))
+
+    assert result.exit_code == 1
+    assert result.run_result.failure is not None
+    assert result.run_result.failure.code == "context_budget_exceeded"
+    assert provider.requests == []

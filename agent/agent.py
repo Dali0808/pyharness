@@ -14,11 +14,14 @@ class AgentState:
     tools: ToolRegistry
     context_manager: ContextManager = field(default_factory=ContextManager)
     max_steps: int = 10
+    max_output_tokens: int | None = None
     messages: list[Message] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.max_steps <= 0:
             raise ValueError("max_steps must be positive")
+        if self.max_output_tokens is not None and self.max_output_tokens <= 0:
+            raise ValueError("max_output_tokens must be positive")
 
     def add_message(self, message: Message) -> None:
         self.messages.append(message)

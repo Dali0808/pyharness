@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
 
 from ai.provider import ModelRegistry, ProviderError
 from ai.schemas import (
@@ -39,6 +40,15 @@ class RunResult:
     usage: Usage
 
 
+class RequestPreparationError(RuntimeError):
+    def __init__(self, code: FailureCode, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+RequestPreparer = Callable[[AgentState], Awaitable[None]]
+
+
 class AgentRunner:
     def __init__(self, models: ModelRegistry) -> None:
         self._models = models
@@ -49,6 +59,7 @@ class AgentRunner:
         user_message: UserMessage,
         *,
         on_event: EventHandler | None = None,
+        before_request: RequestPreparer | None = None,
     ) -> RunResult:
         state.add_message(user_message)
         self._emit(on_event, RunStarted())
@@ -57,6 +68,17 @@ class AgentRunner:
         steps = 0
 
         while steps < state.max_steps:
+            if before_request is not None:
+                try:
+                    await before_request(state)
+                except RequestPreparationError as exc:
+                    return self._fail(
+                        on_event=on_event,
+                        code=exc.code,
+                        message=str(exc),
+                        steps=steps,
+                        usage=total_usage,
+                    )
             steps += 1
 
             request = ChatRequest(
@@ -67,6 +89,7 @@ class AgentRunner:
                     if state.model.supports_tools
                     else []
                 ),
+                max_tokens=state.max_output_tokens,
             )
             self._emit(
                 on_event,
