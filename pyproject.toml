@@ -5,6 +5,7 @@ requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2.13.5",
+    "textual>=8.2.8",
 ]
 
 [dependency-groups]

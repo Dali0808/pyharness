@@ -19,6 +19,7 @@ FailureCode: TypeAlias = Literal[
     "context_budget_exceeded",
     "compaction_failed",
     "session_error",
+    "cancelled",
 ]
 
 

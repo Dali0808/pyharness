@@ -320,18 +320,39 @@ async def run_task(
         if on_event is not None:
             on_event(event)
 
-    result = await runner.run(
-        state,
-        user_message,
-        on_event=handle_event,
-        before_request=budget.prepare if budget is not None else None,
-    )
+    try:
+        result = await runner.run(
+            state,
+            user_message,
+            on_event=handle_event,
+            before_request=budget.prepare if budget is not None else None,
+        )
+    except asyncio.CancelledError:
+        result = RunResult(
+            final_message=None,
+            failure=RunFailure(
+                code="cancelled",
+                message="The current run was stopped.",
+            ),
+            steps=0,
+            usage=Usage(),
+        )
+        handle_event(RunFailed(
+            code="cancelled",
+            message=result.failure.message,
+            steps=0,
+        ))
 
     if session_store is not None:
         run_completed = result.failure is None and result.final_message is not None
         session_store.end_run(
             run_id,
-            "completed" if run_completed else "failed",
+            "completed" if run_completed else (
+                "interrupted"
+                if result.failure is not None
+                and result.failure.code == "cancelled"
+                else "failed"
+            ),
             failure_code=(
                 result.failure.code
                 if result.failure
