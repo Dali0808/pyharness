@@ -227,7 +227,8 @@ class RequestBudgetManager(ContextManager):
         )
 
     async def prepare(self, state: AgentState) -> None:
-        input_budget = int(self.context_window * 0.8) - self.output_reserve
+        # Keep enough headroom for the larger workspace-tool declaration set.
+        input_budget = int(self.context_window * 0.86) - self.output_reserve
         if input_budget <= 0:
             raise RequestPreparationError(
                 "context_budget_exceeded",

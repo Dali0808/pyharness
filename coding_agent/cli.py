@@ -38,6 +38,10 @@ from ai.schemas import (
     utc_now,
 )
 from coding_agent.builtins import (
+    Approval,
+    create_edit_file_tool,
+    create_glob_file_tool,
+    create_grep_file_tool,
     create_list_dir_tool,
     create_read_file_tool,
     create_write_file_tool,
@@ -238,6 +242,7 @@ async def run_task(
     output: TextIO,
     *,
     on_event: EventHandler | None = None,
+    approve: Approval | None = None,
 ) -> TaskRunResult:
     model = ModelSpec(
         provider=config.provider_id,
@@ -260,9 +265,13 @@ async def run_task(
     models.register(model, provider)
 
     tools = ToolRegistry()
+    approval = approve or _allow_change
     tools.register(create_read_file_tool(config.workspace))
-    tools.register(create_write_file_tool(config.workspace))
+    tools.register(create_write_file_tool(config.workspace, approval))
     tools.register(create_list_dir_tool(config.workspace))
+    tools.register(create_glob_file_tool(config.workspace))
+    tools.register(create_grep_file_tool(config.workspace))
+    tools.register(create_edit_file_tool(config.workspace, approval))
 
     user_message = UserMessage(content=config.task)
     budget: RequestBudgetManager | None = None
@@ -362,18 +371,26 @@ def main(
     *,
     provider_factory: ProviderFactory | None = None,
     output: TextIO | None = None,
+    approve: Approval | None = None,
 ) -> int:
     config = parse_args(argv)
     factory = provider_factory or create_provider
     stream = output if output is not None else sys.stdout
+    if approve is None:
+        approve = (
+            lambda diff: _cli_approval(diff, stream)
+            if provider_factory is None
+            else _allow_change(diff)
+        )
 
-    return asyncio.run(_run_main(config, factory, stream))
+    return asyncio.run(_run_main(config, factory, stream, approve))
 
 
 async def _run_main(
     config: CliConfig,
     provider_factory: ProviderFactory,
     output: TextIO,
+    approve: Approval,
 ) -> int:
     provider = provider_factory(config)
 
@@ -382,6 +399,7 @@ async def _run_main(
             config,
             provider,
             output,
+            approve=approve,
         )
         return task_result.exit_code
     finally:
@@ -396,6 +414,19 @@ async def close_provider(provider: LLMProvider) -> None:
     result = close()
     if inspect.isawaitable(result):
         await result
+
+
+def _allow_change(_: str) -> bool:
+    return True
+
+
+def _cli_approval(diff: str, output: TextIO) -> bool:
+    print("proposed change:", file=output)
+    print(diff, file=output, end="" if diff.endswith("\n") else "\n")
+    if not sys.stdin.isatty():
+        return False
+    answer = input("Apply this change? [y/N] ")
+    return answer.strip().lower() in {"y", "yes"}
 
 
 def render_event(event: AgentEvent) -> str:

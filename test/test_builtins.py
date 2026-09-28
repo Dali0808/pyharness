@@ -8,6 +8,9 @@ import pytest
 from agent.tools import ToolRegistry
 from ai.schemas import ToolCallPart
 from coding_agent.builtins import (
+    create_edit_file_tool,
+    create_glob_file_tool,
+    create_grep_file_tool,
     create_read_file_tool,
     resolve_workspace_path,
     create_write_file_tool,
@@ -518,3 +521,121 @@ async def test_list_dir_rejects_unknown_arguments(
     assert result.tool_name == "list_dir"
     assert result.content.startswith("invalid_arguments:")
     assert "unexpected" in result.content
+
+
+@pytest.mark.asyncio
+async def test_read_file_supports_bounded_line_ranges(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "module.py").write_text("one\ntwo\nthree\n", encoding="utf-8")
+    registry = make_registry(workspace)
+
+    result = await registry.execute(make_read_call({
+        "path": "module.py", "offset": 2, "limit": 2,
+    }))
+
+    assert result.is_error is False
+    assert result.content == "2: two\n3: three"
+
+
+@pytest.mark.asyncio
+async def test_glob_and_grep_bound_search_to_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "src").mkdir()
+    (workspace / "src/main.py").write_text("needle = 1\n", encoding="utf-8")
+    (workspace / "README.md").write_text("needle\n", encoding="utf-8")
+    registry = ToolRegistry()
+    registry.register(create_glob_file_tool(workspace))
+    registry.register(create_grep_file_tool(workspace))
+
+    glob_result = await registry.execute(ToolCallPart(
+        id="glob-1", name="glob_file",
+        arguments_json=json.dumps({"pattern": "*.py"}),
+    ))
+    grep_result = await registry.execute(ToolCallPart(
+        id="grep-1", name="grep_file",
+        arguments_json=json.dumps({"pattern": "needle", "glob": "*.py"}),
+    ))
+
+    assert glob_result.content == "src/main.py"
+    assert grep_result.content == "src/main.py:1:needle = 1"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_requires_unique_match_and_approval(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "module.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    diffs: list[str] = []
+
+    def approve(diff: str) -> bool:
+        diffs.append(diff)
+        return True
+
+    registry = ToolRegistry()
+    registry.register(create_edit_file_tool(workspace, approve))
+    result = await registry.execute(ToolCallPart(
+        id="edit-1", name="edit_file",
+        arguments_json=json.dumps({
+            "path": "module.py", "old_string": "value = 1",
+            "new_string": "value = 2",
+        }),
+    ))
+
+    assert result.is_error is False
+    assert target.read_text(encoding="utf-8") == "value = 2\n"
+    assert diffs and "-value = 1" in diffs[0] and "+value = 2" in diffs[0]
+
+
+@pytest.mark.asyncio
+async def test_edit_file_rejection_and_conflict_leave_file_unchanged(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "module.py"
+    target.write_text("value = 1\n", encoding="utf-8")
+    rejected = ToolRegistry()
+    rejected.register(create_edit_file_tool(workspace, lambda _: False))
+    call = ToolCallPart(
+        id="edit-2", name="edit_file",
+        arguments_json=json.dumps({
+            "path": "module.py", "old_string": "value = 1",
+            "new_string": "value = 2",
+        }),
+    )
+
+    result = await rejected.execute(call)
+    assert result.is_error is True
+    assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+    def mutate_then_approve(_: str) -> bool:
+        target.write_text("value = 9\n", encoding="utf-8")
+        return True
+
+    conflicted = ToolRegistry()
+    conflicted.register(create_edit_file_tool(workspace, mutate_then_approve))
+    result = await conflicted.execute(call)
+    assert result.is_error is True
+    assert target.read_text(encoding="utf-8") == "value = 9\n"
+
+
+@pytest.mark.asyncio
+async def test_write_file_approval_protects_existing_content(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "module.py"
+    target.write_text("old\n", encoding="utf-8")
+    registry = ToolRegistry()
+    registry.register(create_write_file_tool(workspace, lambda _: False))
+
+    result = await registry.execute(make_write_call({
+        "path": "module.py", "content": "new\n",
+    }))
+
+    assert result.is_error is True
+    assert target.read_text(encoding="utf-8") == "old\n"

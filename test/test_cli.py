@@ -103,6 +103,9 @@ def test_main_runs_workspace_tool_task_and_renders_events(
         "read_file",
         "write_file",
         "list_dir",
+        "glob_file",
+        "grep_file",
+        "edit_file",
     ]
     assert [
         message.role
