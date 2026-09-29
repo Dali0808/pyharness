@@ -107,6 +107,7 @@ def create_app(
         def compose(self) -> ComposeResult:
             yield Vertical(
                 Static("Review proposed change", classes="modal-title"),
+                Static("The agent wants to modify a workspace file.", classes="modal-copy"),
                 RichLog(id="diff", markup=False),
                 Horizontal(
                     Button("Apply", id="apply", variant="success"),
@@ -123,17 +124,93 @@ def create_app(
             self.dismiss(event.button.id == "apply")
 
     class HarnessApp(App[None]):
+        TITLE = "pyharness"
+        SUB_TITLE = "coding workspace"
         CSS = """
-        Screen { layout: vertical; }
-        #toolbar { height: 3; padding: 1; }
-        #status { width: 1fr; }
-        #stop { width: 12; }
-        #log { height: 1fr; border: solid $surface-lighten-2; }
-        #task { dock: bottom; height: 6; margin: 1; }
-        #approval-dialog { width: 90%; height: 80%; padding: 1; background: $surface; }
-        #diff { height: 1fr; border: solid $surface-lighten-2; }
-        .modal-title { height: 2; text-style: bold; }
-        .modal-actions { height: 3; align: right middle; }
+        Screen {
+            layout: vertical;
+            background: $surface;
+        }
+        Header {
+            background: $panel;
+            color: $text;
+            dock: top;
+        }
+        Footer {
+            background: $panel;
+            color: $text-muted;
+        }
+        #toolbar {
+            height: 4;
+            padding: 1 2;
+            background: $panel;
+            border-bottom: solid $primary-darken-2;
+        }
+        #status {
+            width: 1fr;
+            color: $text-muted;
+            content-align: left middle;
+        }
+        #stop {
+            width: 12;
+            min-width: 12;
+            margin-left: 2;
+        }
+        #conversation {
+            height: 1fr;
+            padding: 1 2 0 2;
+        }
+        #log {
+            height: 1fr;
+            padding: 1 2;
+            border: round $primary-darken-2;
+            background: $surface-darken-1;
+            scrollbar-color: $primary-darken-1;
+        }
+        #composer {
+            height: 9;
+            padding: 1 2;
+            background: $panel;
+            border-top: solid $primary-darken-2;
+        }
+        #composer-title {
+            height: 1;
+            color: $text;
+            text-style: bold;
+        }
+        #composer-hint {
+            height: 1;
+            color: $text-muted;
+        }
+        #task {
+            height: 5;
+            margin-top: 1;
+            border: round $primary;
+            background: $surface;
+        }
+        #approval-dialog {
+            width: 92%;
+            height: 82%;
+            padding: 2;
+            background: $panel;
+            border: round $primary;
+        }
+        .modal-title {
+            height: 2;
+            color: $text;
+            text-style: bold;
+        }
+        .modal-copy {
+            height: 2;
+            color: $text-muted;
+        }
+        .modal-actions {
+            height: 3;
+            align: right middle;
+        }
+        .modal-actions Button {
+            margin-left: 1;
+        }
         """
         BINDINGS = [
             ("ctrl+c", "stop_run", "Stop"),
@@ -157,13 +234,21 @@ def create_app(
                 Button("Stop", id="stop", disabled=True),
                 id="toolbar",
             )
-            yield RichLog(id="log", highlight=True, markup=False)
-            yield TaskTextArea(
-                placeholder=(
-                    "Describe the next coding task. "
-                    "Enter submits; Shift+Enter adds a new line."
+            yield Vertical(
+                RichLog(id="log", highlight=True, markup=False),
+                id="conversation",
+            )
+            yield Vertical(
+                Static("New task", id="composer-title"),
+                Static(
+                    "Enter submit  •  Shift+Enter new line  •  Ctrl+Q quit",
+                    id="composer-hint",
                 ),
-                id="task",
+                TaskTextArea(
+                    placeholder="Describe what you want the coding agent to do...",
+                    id="task",
+                ),
+                id="composer",
             )
             yield Footer()
 
