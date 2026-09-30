@@ -75,11 +75,14 @@ async def test_tui_runs_task_and_renders_answer(tmp_path: Path) -> None:
     app = create_app(config, provider=provider)
 
     async with app.run_test() as pilot:
+        assert app.title == "Lario"
+        assert app.query_one("#welcome").display is True
         await pilot.click("#task")
         await pilot.press("h", "i", "enter")
         await pilot.pause(0.1)
 
         assert len(provider.requests) == 1
+        assert app.query_one("#welcome").display is False
         assert str(app.query_one("#status").render()).endswith("| ready")
         assert any("answer: Done" in str(line) for line in app.query_one("#log").lines)
 

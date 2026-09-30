@@ -124,8 +124,9 @@ def create_app(
             self.dismiss(event.button.id == "apply")
 
     class HarnessApp(App[None]):
-        TITLE = "pyharness"
+        TITLE = "Lario"
         SUB_TITLE = "coding workspace"
+        WELCOME_ART = "   __\n  (o )___\n   ( ._> /\n    `---'"
         CSS = """
         Screen {
             layout: vertical;
@@ -159,6 +160,13 @@ def create_app(
         #conversation {
             height: 1fr;
             padding: 1 2 0 2;
+        }
+        #welcome {
+            height: 1fr;
+            padding: 2 4;
+            content-align: center middle;
+            color: $text-muted;
+            text-align: center;
         }
         #log {
             height: 1fr;
@@ -235,6 +243,12 @@ def create_app(
                 id="toolbar",
             )
             yield Vertical(
+                Static(
+                    self.WELCOME_ART
+                    + "\n\nLario\nYour coding workspace is ready.",
+                    id="welcome",
+                    markup=False,
+                ),
                 RichLog(id="log", highlight=True, markup=False),
                 id="conversation",
             )
@@ -272,6 +286,7 @@ def create_app(
             if not task or self.current_task is not None:
                 return
             task_input.clear()
+            self.query_one("#welcome", Static).display = False
             self.current_task = asyncio.create_task(self._run(task))
 
         async def _run(self, task: str) -> None:
