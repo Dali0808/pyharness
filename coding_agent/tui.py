@@ -7,7 +7,15 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Sequence
 
-from agent.events import AgentEvent, RunFailed, RunFinished
+from agent.events import (
+    AgentEvent,
+    ModelRequested,
+    ModelResponded,
+    RunFailed,
+    RunFinished,
+    ToolFinished,
+    ToolStarted,
+)
 from coding_agent.builtins import resolve_workspace_path
 from coding_agent.cli import (
     CliConfig,
@@ -74,7 +82,9 @@ def create_app(
         from textual.events import Key
         from textual.message import Message
         from textual.screen import ModalScreen
+        from textual.theme import Theme
         from textual.widgets import Button, Footer, Header, RichLog, Static, TextArea
+        from rich.markdown import Markdown
     except ImportError as exc:
         raise RuntimeError(
             "The TUI requires Textual. Install project dependencies first."
@@ -130,21 +140,23 @@ def create_app(
         CSS = """
         Screen {
             layout: vertical;
-            background: $surface;
+            background: ansi_default;
         }
         Header {
-            background: $panel;
+            background: transparent;
             color: $text;
             dock: top;
+            border-bottom: solid $primary-darken-2;
         }
         Footer {
-            background: $panel;
+            background: transparent;
             color: $text-muted;
+            border-top: solid $primary-darken-2;
         }
         #toolbar {
             height: 4;
-            padding: 1 2;
-            background: $panel;
+            padding: 0 2;
+            background: transparent;
             border-bottom: solid $primary-darken-2;
         }
         #status {
@@ -157,50 +169,99 @@ def create_app(
             min-width: 12;
             margin-left: 2;
         }
+        #toggle-steps {
+            width: 16;
+            min-width: 16;
+            margin-left: 1;
+        }
+        #stop, #toggle-steps {
+            height: 3;
+            color: $primary;
+            background: transparent;
+            border: round $primary;
+            text-style: bold;
+            content-align: center middle;
+        }
+        #stop:hover, #toggle-steps:hover {
+            background: transparent;
+            color: $secondary;
+            text-style: bold underline;
+        }
+        #stop:disabled {
+            border: round $primary !important;
+        }
         #conversation {
             height: 1fr;
-            padding: 1 2 0 2;
+            padding: 0 2;
+            background: transparent;
         }
         #welcome {
             height: 1fr;
-            padding: 2 4;
-            content-align: center middle;
+            padding: 0 4;
+            align: center middle;
+            background: transparent;
+            border: round $primary;
+        }
+        #welcome-brand, #welcome-info {
+            height: 1fr;
+            padding: 0 3;
+            background: transparent;
+        }
+        #welcome-brand {
+            width: 1fr;
+        }
+        #welcome-info {
+            width: 1fr;
+            margin-left: 2;
+            border-left: solid $secondary-darken-1;
+        }
+        .welcome-title {
+            height: 1;
+            color: $primary;
+            text-style: bold;
+        }
+        .welcome-heading {
+            height: 1;
+            color: $secondary;
+            text-style: bold;
+        }
+        .welcome-copy {
             color: $text-muted;
-            text-align: center;
+        }
+        #welcome-art {
+            color: $warning;
+        }
+        #welcome-workspace {
+            color: $text-muted;
         }
         #log {
             height: 1fr;
             padding: 1 2;
             border: round $primary-darken-2;
-            background: $surface-darken-1;
+            background: transparent;
             scrollbar-color: $primary-darken-1;
         }
         #composer {
-            height: 9;
-            padding: 1 2;
-            background: $panel;
+            height: 10;
+            padding: 1 2 0 2;
+            background: transparent;
             border-top: solid $primary-darken-2;
-        }
-        #composer-title {
-            height: 1;
-            color: $text;
-            text-style: bold;
         }
         #composer-hint {
             height: 1;
             color: $text-muted;
         }
         #task {
-            height: 5;
+            height: 6;
             margin-top: 1;
             border: round $primary;
-            background: $surface;
+            background: transparent;
         }
         #approval-dialog {
             width: 92%;
             height: 82%;
             padding: 2;
-            background: $panel;
+            background: transparent;
             border: round $primary;
         }
         .modal-title {
@@ -227,9 +288,35 @@ def create_app(
 
         def __init__(self) -> None:
             super().__init__()
+            self.register_theme(
+                Theme(
+                    name="lario-blue",
+                    primary="#1683d8",
+                    secondary="#4aa3df",
+                    warning="#1683d8",
+                    error="#c75c6b",
+                    success="#4fb477",
+                    accent="#1683d8",
+                    foreground="ansi_default",
+                    background="ansi_default",
+                    surface="ansi_default",
+                    panel="ansi_default",
+                    ansi=True,
+                    variables={
+                        "ansi-background": "ansi_default",
+                        "ansi-foreground": "ansi_default",
+                        "footer-key-foreground": "#1683d8",
+                        "button-focus-text-style": "bold underline",
+                        "input-cursor-background": "#1683d8",
+                    },
+                )
+            )
+            self.theme = "lario-blue"
             self.config = config
             self.provider = provider
             self.current_task: asyncio.Task[Any] | None = None
+            self.show_steps = False
+            self._log_entries: list[tuple[bool, Any]] = []
 
         def compose(self) -> ComposeResult:
             yield Header()
@@ -240,20 +327,39 @@ def create_app(
                     id="status",
                 ),
                 Button("Stop", id="stop", disabled=True),
+                Button("Show steps", id="toggle-steps"),
                 id="toolbar",
             )
             yield Vertical(
-                Static(
-                    self.WELCOME_ART
-                    + "\n\nLario\nYour coding workspace is ready.",
+                Horizontal(
+                    Vertical(
+                        Static("Lario", classes="welcome-title"),
+                        Static(self.WELCOME_ART, id="welcome-art", markup=False),
+                        Static(
+                            "Coding workspace.",
+                            classes="welcome-copy",
+                        ),
+                        Static(
+                            f"workspace: {self.config.workspace.name or self.config.workspace}",
+                            id="welcome-workspace",
+                        ),
+                        id="welcome-brand",
+                    ),
+                    Vertical(
+                        Static("Getting started", classes="welcome-title"),
+                        Static("Describe a task below.", classes="welcome-copy"),
+                        Static("Enter  submit task", classes="welcome-copy"),
+                        Static("Shift+Enter  new line", classes="welcome-copy"),
+                        Static("Show steps  view activity", classes="welcome-copy"),
+                        Static("Recent activity: none", classes="welcome-heading"),
+                        id="welcome-info",
+                    ),
                     id="welcome",
-                    markup=False,
                 ),
                 RichLog(id="log", highlight=True, markup=False),
                 id="conversation",
             )
             yield Vertical(
-                Static("New task", id="composer-title"),
                 Static(
                     "Enter submit  •  Shift+Enter new line  •  Ctrl+Q quit",
                     id="composer-hint",
@@ -269,6 +375,8 @@ def create_app(
         async def on_mount(self) -> None:
             if self.provider is None:
                 self.provider = create_provider(self.config)
+            self.query_one("#log", RichLog).display = False
+            self.query_one("#toggle-steps", Button).active_effect_duration = 0
             self.query_one("#task", TaskTextArea).focus()
 
         async def on_unmount(self) -> None:
@@ -286,7 +394,8 @@ def create_app(
             if not task or self.current_task is not None:
                 return
             task_input.clear()
-            self.query_one("#welcome", Static).display = False
+            self.query_one("#welcome").display = False
+            self.query_one("#log", RichLog).display = True
             self.current_task = asyncio.create_task(self._run(task))
 
         async def _run(self, task: str) -> None:
@@ -295,10 +404,18 @@ def create_app(
             output = StringIO()
 
             def on_event(event: AgentEvent) -> None:
-                self._write(render_event(event))
+                is_step_event = isinstance(
+                    event, (ModelRequested, ModelResponded, ToolStarted, ToolFinished)
+                )
+                if is_step_event:
+                    self._write(render_event(event), step=True)
+                    return
                 if isinstance(event, RunFinished):
-                    self._write(f"answer: {assistant_text(event.final_message)}")
-                elif isinstance(event, RunFailed):
+                    self._write("answer:")
+                    self._write(Markdown(assistant_text(event.final_message)))
+                    return
+                self._write(render_event(event))
+                if isinstance(event, RunFailed):
                     self._write(f"failed ({event.code}): {event.message}")
 
             async def approve(diff: str) -> bool:
@@ -343,9 +460,24 @@ def create_app(
         def on_button_pressed(self, event: Button.Pressed) -> None:
             if event.button.id == "stop":
                 self.action_stop_run()
+            elif event.button.id == "toggle-steps":
+                self.show_steps = not self.show_steps
+                event.button.label = (
+                    "Hide steps" if self.show_steps else "Show steps"
+                )
+                self._refresh_log()
 
-        def _write(self, message: str) -> None:
-            self.query_one("#log", RichLog).write(message)
+        def _write(self, message: Any, *, step: bool = False) -> None:
+            self._log_entries.append((step, message))
+            if not step or self.show_steps:
+                self.query_one("#log", RichLog).write(message)
+
+        def _refresh_log(self) -> None:
+            log = self.query_one("#log", RichLog)
+            log.clear()
+            for is_step, message in self._log_entries:
+                if self.show_steps or not is_step:
+                    log.write(message)
 
         def _set_status(self, value: str) -> None:
             status = self.query_one("#status", Static)

@@ -13,6 +13,10 @@ from coding_agent.session import JsonlSessionStore
 from coding_agent.tui import create_app, parse_tui_args
 
 
+def log_text(line: object) -> str:
+    return "".join(segment.text for segment in line._segments)
+
+
 def test_parse_tui_args_uses_workspace_scoped_session(tmp_path: Path) -> None:
     config = parse_tui_args([
         "--workspace", str(tmp_path), "--model", "test-model",
@@ -77,14 +81,69 @@ async def test_tui_runs_task_and_renders_answer(tmp_path: Path) -> None:
     async with app.run_test() as pilot:
         assert app.title == "Lario"
         assert app.query_one("#welcome").display is True
+        assert app.query_one("#log").display is False
+        assert app.query_one("#toggle-steps").label == "Show steps"
+        assert app.query_one("#stop").label == "Stop"
+        assert app.query_one("#task").region.bottom == app.query_one("Footer").region.y
+        assert app.query_one("#task").styles.background.a == 0
+        assert app.query_one("#toggle-steps").styles.border.bottom[0] == "round"
         await pilot.click("#task")
         await pilot.press("h", "i", "enter")
         await pilot.pause(0.1)
 
         assert len(provider.requests) == 1
         assert app.query_one("#welcome").display is False
+        assert app.query_one("#log").display is True
         assert str(app.query_one("#status").render()).endswith("| ready")
-        assert any("answer: Done" in str(line) for line in app.query_one("#log").lines)
+        lines = app.query_one("#log").lines
+        assert any("answer:" in log_text(line) for line in lines)
+        assert any("Done" in log_text(line) for line in lines)
+        assert all("##" not in log_text(line) for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_tui_hides_steps_until_requested(tmp_path: Path) -> None:
+    (tmp_path / "note.txt").write_text("hello\n", encoding="utf-8")
+    provider = ScriptedProvider([
+        ChatResponse(
+            message=AssistantMessage(content=[ToolCallPart(
+                id="read-1",
+                name="read_file",
+                arguments_json='{"path":"note.txt"}',
+            )]),
+            finish_reason="tool_calls",
+        ),
+        ChatResponse(
+            message=AssistantMessage(content=[TextPart(text="## Done")]),
+            finish_reason="stop",
+        ),
+    ])
+    config = parse_tui_args([
+        "--workspace", str(tmp_path), "--provider-id", "scripted",
+        "--model", "test-model", "--session", "history.jsonl",
+    ])
+    app = create_app(config, provider=provider)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#task")
+        await pilot.press("h", "i", "enter")
+        await pilot.pause(0.2)
+
+        assert not any(
+            "step 1:" in log_text(line)
+            for line in app.query_one("#log").lines
+        )
+        await pilot.click("#toggle-steps")
+        assert any(
+            "step 1:" in log_text(line)
+            for line in app.query_one("#log").lines
+        )
+        await pilot.click("#toggle-steps")
+        assert app.query_one("#toggle-steps").label == "Show steps"
+        assert not any(
+            "step 1:" in log_text(line)
+            for line in app.query_one("#log").lines
+        )
 
 
 @pytest.mark.asyncio
