@@ -71,6 +71,20 @@ def parse_tui_args(argv: Sequence[str] | None = None) -> CliConfig:
     )
 
 
+def _display_workspace_path(path: Path) -> str:
+    try:
+        return str(Path("~") / path.relative_to(Path.home()))
+    except ValueError:
+        return str(path)
+
+
+def _display_session_path(config: CliConfig) -> str:
+    try:
+        return str(config.session_path.relative_to(config.workspace))
+    except ValueError:
+        return str(config.session_path)
+
+
 def create_app(
     config: CliConfig,
     *,
@@ -136,7 +150,7 @@ def create_app(
     class HarnessApp(App[None]):
         TITLE = "Lario"
         SUB_TITLE = "coding workspace"
-        WELCOME_ART = "   __\n  (o )___\n   ( ._> /\n    `---'"
+        WELCOME_ART = "     ▐▛██▜▌\n    ▐ ●  ● ▌\n    ▐   3  ▌\n     ▝▜██▛▘"
         CSS = """
         Screen {
             layout: vertical;
@@ -151,13 +165,11 @@ def create_app(
         Footer {
             background: transparent;
             color: $text-muted;
-            border-top: solid $primary-darken-2;
         }
         #toolbar {
-            height: 4;
+            height: 3;
             padding: 0 2;
             background: transparent;
-            border-bottom: solid $primary-darken-2;
         }
         #status {
             width: 1fr;
@@ -165,13 +177,13 @@ def create_app(
             content-align: left middle;
         }
         #stop {
-            width: 12;
-            min-width: 12;
+            width: 10;
+            min-width: 10;
             margin-left: 2;
         }
         #toggle-steps {
-            width: 16;
-            min-width: 16;
+            width: 14;
+            min-width: 14;
             margin-left: 1;
         }
         #stop, #toggle-steps {
@@ -242,18 +254,12 @@ def create_app(
             scrollbar-color: $primary-darken-1;
         }
         #composer {
-            height: 10;
-            padding: 1 2 0 2;
+            height: 6;
+            padding: 0 2;
             background: transparent;
-            border-top: solid $primary-darken-2;
-        }
-        #composer-hint {
-            height: 1;
-            color: $text-muted;
         }
         #task {
             height: 6;
-            margin-top: 1;
             border: round $primary;
             background: transparent;
         }
@@ -322,8 +328,7 @@ def create_app(
             yield Header()
             yield Horizontal(
                 Static(
-                    f"workspace: {self.config.workspace} | "
-                    f"session: {self.config.session_path}",
+                    f"session: {_display_session_path(self.config)}",
                     id="status",
                 ),
                 Button("Stop", id="stop", disabled=True),
@@ -340,7 +345,7 @@ def create_app(
                             classes="welcome-copy",
                         ),
                         Static(
-                            f"workspace: {self.config.workspace.name or self.config.workspace}",
+                            f"workspace: {_display_workspace_path(self.config.workspace)}",
                             id="welcome-workspace",
                         ),
                         id="welcome-brand",
@@ -360,10 +365,6 @@ def create_app(
                 id="conversation",
             )
             yield Vertical(
-                Static(
-                    "Enter submit  •  Shift+Enter new line  •  Ctrl+Q quit",
-                    id="composer-hint",
-                ),
                 TaskTextArea(
                     placeholder="Describe what you want the coding agent to do...",
                     id="task",
@@ -482,8 +483,7 @@ def create_app(
         def _set_status(self, value: str) -> None:
             status = self.query_one("#status", Static)
             status.update(
-                f"workspace: {self.config.workspace} | "
-                f"session: {self.config.session_path} | {value}"
+                f"session: {_display_session_path(self.config)} | {value}"
             )
 
         def _set_running(self, running: bool) -> None:

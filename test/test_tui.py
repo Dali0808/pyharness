@@ -82,9 +82,15 @@ async def test_tui_runs_task_and_renders_answer(tmp_path: Path) -> None:
         assert app.title == "Lario"
         assert app.query_one("#welcome").display is True
         assert app.query_one("#log").display is False
+        assert "workspace:" not in str(app.query_one("#status").render())
+        assert "session: history.jsonl" in str(app.query_one("#status").render())
+        assert str(tmp_path) in str(app.query_one("#welcome-workspace").render())
         assert app.query_one("#toggle-steps").label == "Show steps"
         assert app.query_one("#stop").label == "Stop"
         assert app.query_one("#task").region.bottom == app.query_one("Footer").region.y
+        assert app.query_one("#toolbar").styles.border.bottom[0] == ""
+        assert app.query_one("#composer").styles.border.top[0] == ""
+        assert app.query_one("Footer").styles.border.top[0] == ""
         assert app.query_one("#task").styles.background.a == 0
         assert app.query_one("#toggle-steps").styles.border.bottom[0] == "round"
         await pilot.click("#task")
