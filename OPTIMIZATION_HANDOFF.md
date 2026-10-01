@@ -1,6 +1,6 @@
 # pyharness 优化开发交接
 
-> 更新于 2026-09-28，O3 工作树基于 `c401242`。长期约束见 [AGENTS.md](AGENTS.md)；本文件只记录进度、取舍与阶段验收。开始新阶段前以当前代码为准。
+> 更新于 2026-10-01，当前工作树已完成最小 TUI 交付。长期约束见 [AGENTS.md](AGENTS.md)；本文件只记录进度、取舍与阶段验收。开始新阶段前以当前代码为准。
 
 ## 目标与取舍
 
@@ -17,15 +17,17 @@
 | O1 评测口径 | 功能已完成，标准环境待复验 | `52c1be8` 已区分运行、产物、任务成功和独立工具覆盖；反例测试与 README 已更新。 |
 | O2 Session 与上下文 | 功能已完成，标准环境待复验 | `c401242` 已加入 JSONL v2 恢复、v1 迁移、配置校验、逐次请求预算和压缩失败处理。 |
 | O3 CLI 编码闭环 | 已完成 | 已加入有界搜索、按行读取、局部编辑、diff 审批和冲突保护；离线测试已通过。 |
-| O4 最小 TUI | 开发中 | 已建立并锁定 Textual TUI 主链路；离线无头测试已通过，待真实模型验收。 |
+| O4 最小 TUI | 已完成 | Textual TUI 主链路、审批、停止、会话显示和交互样式已完成；离线回归通过，并已完成真实模型试跑。 |
 | O5 必要运行增强 | 未开始 | 流式文本、有限重试、受限测试执行；依据 O4 试跑结果调整优先级。 |
 | O6 真实任务验收 | 未开始 | 少量可复现任务、结果记录和安装使用文档。 |
 
 O3 的离线测试已通过。此前本机默认 `uv` 缓存和 pytest capture 曾导致环境错误；用户已在本机确认测试通过。
 
-O4 当前已新增 `coding_agent/tui.py`：复用 `run_task()`、Session 和现有事件，支持多行任务输入、工具进度、diff 审批、停止运行和连续会话。Textual 已加入并锁定到项目依赖；TUI 无头测试通过，真实模型试跑仍待完成。
+O4 已在 `coding_agent/tui.py` 完成：复用 `run_task()`、Session 和现有事件，支持多行任务输入、Markdown 回答、默认隐藏且可切换的步骤日志、diff 审批、停止运行和连续会话。界面使用 Lario 蓝色主题和终端默认背景，欢迎页、工作区路径、相对 Session 路径、输入区和按钮布局已完成打磨；Textual 已加入并锁定到项目依赖。
 
-O4 当前验证记录：`test/test_tui.py` 为 5 passed；受限环境全套回归为 189 passed、1 deselected。验证命令为 `env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -p no:capture -p pytest_asyncio.plugin -q -k 'not test_parse_args_rejects_session_path_outside_workspace'`。测试覆盖参数解析、任务执行、取消运行、多行输入和拒绝补丁。
+O4 的提交包括 `1675ea7`、`5a83617`、`3b4dcce` 和 `b95d430`。用户已使用 OpenAI-compatible Provider 完成真实 TUI 编码任务试跑，并根据实际输出完成界面修正。
+
+O4 当前验证记录：`test/test_tui.py` 为 6 passed；受限环境全套回归为 190 passed、1 deselected。验证命令为 `env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -p no:capture -p pytest_asyncio.plugin -q -k 'not test_parse_args_rejects_session_path_outside_workspace'`。测试覆盖参数解析、任务执行、Markdown 渲染、步骤显示切换、多行输入、布局边界、取消运行和拒绝补丁。
 
 ## 已完成阶段
 
@@ -36,12 +38,6 @@ O4 当前验证记录：`test/test_tui.py` 为 5 passed；受限环境全套回�
 - 已覆盖搜索、行读取、审批拒绝、唯一匹配和补丁冲突测试。
 
 ## 剩余阶段
-
-### O4：尽早交付可用的 TUI
-
-- 选用 Textual 构建一个薄界面，直接消费共用运行函数与现有事件。首版只需任务输入、回答与工具进度、当前工作区/会话、diff 审查、单次批准或拒绝、停止运行。
-- 先用已有事件显示阶段性进度；逐 token 输出、复杂布局、独立会话格式和完整配置面板不作为 TUI 首版前置条件。不要照搬 mini-harness 的子进程与第二套 Session 实现。
-- 验收：TUI 可用真实模型完成 O3 的任务，连续进行两轮对话；停止当前运行后记录明确终态并能恢复会话，拒绝补丁后文件保持原状。CLI 仍可运行。
 
 ### O5：按真实使用结果补运行能力
 
@@ -57,4 +53,4 @@ O4 当前验证记录：`test/test_tui.py` 为 5 passed；受限环境全套回�
 
 ## 下一步
 
-下一步使用 DeepSeek 等 OpenAI-compatible Provider 完成一次真实 TUI 编码任务，验证连续对话、停止后恢复和拒绝补丁。每阶段完成时更新状态、提交、测试命令和真实模型试跑记录；阶段可以小步交叉推进，但只有验收成立才标为完成。
+下一步进入 O5：根据真实使用结果补充流式输出、有限重试和受限测试执行。每阶段完成时更新状态、提交、测试命令和真实模型试跑记录；阶段可以小步交叉推进，但只有验收成立才标为完成。
