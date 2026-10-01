@@ -35,6 +35,12 @@ class ModelRequested:
 
 
 @dataclass(frozen=True, slots=True)
+class ModelTextDelta:
+    step: int
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
 class ModelResponded:
     step: int
     response: ChatResponse
@@ -68,6 +74,7 @@ class RunFailed:
 AgentEvent: TypeAlias = (
     RunStarted
     | ModelRequested
+    | ModelTextDelta
     | ModelResponded
     | ToolStarted
     | ToolFinished

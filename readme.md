@@ -2,6 +2,28 @@
 
 A small Python agent harness with workspace tools and deterministic evaluation cases.
 
+## Streaming answers
+
+The TUI displays OpenAI-compatible chat completion text as it arrives. Tool calls
+are assembled before execution, and only complete model responses are saved in
+the session. Stopping a stream marks the run interrupted and shows any partial
+answer as unsaved text. Providers without streaming support still use the
+existing complete-response path.
+
+Model requests retry once after 0.25 seconds on HTTP 429, 5xx, or connection
+errors. Requests do not retry after any streamed text has been shown.
+
+## Verification commands
+
+The agent can propose one existing project check with `run_command` (an argument
+list and workspace-relative working directory). The TUI shows the complete
+command and resolved directory for approval. An approved command runs through
+macOS `sandbox-exec` with workspace-scoped writes, no network access, a 30-second
+limit, and a 32 KB output limit. Rejected commands and systems without
+`sandbox-exec` do not execute. Stopping the run terminates the command process
+group. The tool does not automatically rerun commands with unknown outcomes.
+This feature requires macOS; `sandbox-exec` is deprecated by Apple.
+
 ## Development checks
 
 ```sh

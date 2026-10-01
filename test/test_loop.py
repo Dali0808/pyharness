@@ -6,6 +6,7 @@ from agent.agent import AgentState
 from agent.events import (
     ModelRequested,
     ModelResponded,
+    ModelTextDelta,
     RunFailed,
     RunFinished,
     RunStarted,
@@ -316,4 +317,31 @@ async def test_runner_preserves_history_when_provider_fails() -> None:
         RunStarted,
         ModelRequested,
         RunFailed,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runner_does_not_save_partial_stream_on_failure() -> None:
+    class InterruptedProvider:
+        id = "interrupted"
+
+        async def complete_stream(self, model, request, on_text):
+            on_text("partial")
+            raise ProviderError("stream interrupted")
+
+    model = make_model(provider="interrupted")
+    models = ModelRegistry()
+    models.register(model, InterruptedProvider())
+    state = make_state(model)
+    events = []
+
+    result = await AgentRunner(models).run(
+        state, UserMessage(content="Hello"), on_event=events.append,
+    )
+
+    assert result.failure is not None
+    assert result.failure.code == "provider_error"
+    assert [message.role for message in state.messages] == ["user"]
+    assert [type(event) for event in events] == [
+        RunStarted, ModelRequested, ModelTextDelta, RunFailed,
     ]

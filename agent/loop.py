@@ -18,6 +18,7 @@ from agent.events import (
     FailureCode,
     ModelRequested,
     ModelResponded,
+    ModelTextDelta,
     RunFailed,
     RunFinished,
     RunStarted,
@@ -97,7 +98,13 @@ class AgentRunner:
             )
 
             try:
-                response = await self._models.complete(state.model, request)
+                response = await self._models.complete_stream(
+                    state.model,
+                    request,
+                    lambda text: self._emit(
+                        on_event, ModelTextDelta(step=steps, text=text)
+                    ),
+                )
             except ProviderError as exc:
                 return self._fail(
                     on_event=on_event,

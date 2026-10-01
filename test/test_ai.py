@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from ai.openai_compatible import OpenAICompatibleProvider
-from ai.provider import ModelRegistry, ScriptedProvider
+from ai.provider import ModelRegistry, ProviderError, ScriptedProvider
 from ai.schemas import (
     AssistantMessage,
     ChatRequest,
@@ -138,3 +138,168 @@ async def test_openai_adapter_serializes_history_and_parses_tool_calls():
     assert part.arguments_json == '{"expression":"21*2"}'
     assert result.finish_reason == "tool_calls"
     assert result.usage.total_tokens == 17
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_streams_text_and_assembles_tool_call():
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.content)
+        chunks = [
+            {"id": "stream-1", "model": "mock-model", "choices": [{
+                "index": 0,
+                "delta": {"content": "Checking ", "tool_calls": [{
+                    "index": 0, "id": "call-", "function": {
+                        "name": "read_", "arguments": '{"pa',
+                    },
+                }]},
+            }]},
+            {"choices": [{"index": 0, "delta": {
+                "content": "done", "tool_calls": [{
+                    "index": 0, "id": "1", "function": {
+                        "name": "file", "arguments": 'th":"note.txt"}',
+                    },
+                }],
+            }, "finish_reason": "tool_calls"}]},
+            {"choices": [], "usage": {
+                "prompt_tokens": 3, "completion_tokens": 4,
+                "total_tokens": 7,
+            }},
+        ]
+        content = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+        return httpx.Response(200, text=content + "data: [DONE]\n\n")
+
+    provider = OpenAICompatibleProvider(
+        provider_id="mock", base_url="https://example.test/v1",
+        api_key=None, transport=httpx.MockTransport(handler),
+    )
+    model = ModelSpec(provider="mock", id="mock-model")
+    deltas: list[str] = []
+    try:
+        result = await provider.complete_stream(
+            model, ChatRequest(system_prompt="", messages=[]), deltas.append
+        )
+    finally:
+        await provider.aclose()
+
+    assert seen["body"]["stream"] is True
+    assert deltas == ["Checking ", "done"]
+    assert result.message.content == [
+        TextPart(text="Checking done"),
+        ToolCallPart(
+            id="call-1", name="read_file",
+            arguments_json='{"path":"note.txt"}',
+        ),
+    ]
+    assert result.usage.total_tokens == 7
+
+
+@pytest.mark.asyncio
+async def test_openai_adapter_rejects_incomplete_stream():
+    provider = OpenAICompatibleProvider(
+        provider_id="mock", base_url="https://example.test/v1",
+        api_key=None,
+        transport=httpx.MockTransport(lambda _: httpx.Response(
+            200, text='data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+        )),
+    )
+    deltas: list[str] = []
+    try:
+        with pytest.raises(ProviderError, match="ended before completion"):
+            await provider.complete_stream(
+                ModelSpec(provider="mock", id="mock-model"),
+                ChatRequest(system_prompt="", messages=[]), deltas.append,
+            )
+    finally:
+        await provider.aclose()
+    assert deltas == ["partial"]
+
+
+@pytest.mark.asyncio
+async def test_registry_retries_one_rate_limited_stream_request():
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            return httpx.Response(429, json={"error": {"message": "rate limited"}})
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"choices":[{"delta":{"content":"Done"},'
+                '"finish_reason":"stop"}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        )
+
+    provider = OpenAICompatibleProvider(
+        provider_id="mock", base_url="https://example.test/v1",
+        api_key=None, transport=httpx.MockTransport(handler),
+    )
+    model = ModelSpec(provider="mock", id="mock-model")
+    registry = ModelRegistry()
+    registry.register(model, provider)
+    deltas: list[str] = []
+    try:
+        result = await registry.complete_stream(
+            model, ChatRequest(system_prompt="", messages=[]), deltas.append,
+        )
+    finally:
+        await provider.aclose()
+
+    assert attempts == 2
+    assert deltas == ["Done"]
+    assert result.message.content == [TextPart(text="Done")]
+
+
+@pytest.mark.asyncio
+async def test_registry_does_not_retry_after_streamed_text():
+    class PartialProvider:
+        id = "partial"
+
+        def __init__(self):
+            self.attempts = 0
+
+        async def complete_stream(self, model, request, on_text):
+            self.attempts += 1
+            on_text("partial")
+            raise ProviderError("connection lost", retryable=True)
+
+    provider = PartialProvider()
+    model = ModelSpec(provider="partial", id="test-model")
+    registry = ModelRegistry()
+    registry.register(model, provider)
+    deltas: list[str] = []
+
+    with pytest.raises(ProviderError, match="connection lost"):
+        await registry.complete_stream(
+            model, ChatRequest(system_prompt="", messages=[]), deltas.append,
+        )
+
+    assert provider.attempts == 1
+    assert deltas == ["partial"]
+
+
+@pytest.mark.asyncio
+async def test_registry_does_not_retry_nonretryable_request():
+    class BadRequestProvider:
+        id = "bad-request"
+
+        def __init__(self):
+            self.attempts = 0
+
+        async def complete(self, model, request):
+            self.attempts += 1
+            raise ProviderError("invalid request", status_code=400)
+
+    provider = BadRequestProvider()
+    model = ModelSpec(provider="bad-request", id="test-model")
+    registry = ModelRegistry()
+    registry.register(model, provider)
+
+    with pytest.raises(ProviderError, match="invalid request"):
+        await registry.complete(model, ChatRequest(system_prompt="", messages=[]))
+
+    assert provider.attempts == 1

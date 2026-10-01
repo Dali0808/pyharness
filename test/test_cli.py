@@ -106,6 +106,7 @@ def test_main_runs_workspace_tool_task_and_renders_events(
         "glob_file",
         "grep_file",
         "edit_file",
+        "run_command",
     ]
     assert [
         message.role
@@ -803,7 +804,7 @@ def test_main_compacts_restored_history_before_agent_run(
     model = ModelSpec(
         provider="scripted",
         id="test-model",
-        context_window=1600,
+        context_window=2200,
     )
     previous_messages = [
         UserMessage(content="First task. " + "x" * 500),
@@ -871,7 +872,7 @@ def test_main_compacts_restored_history_before_agent_run(
             "--system-prompt",
             system_prompt,
             "--context-window",
-            "1600",
+            "2200",
             "--session",
             "history.jsonl",
         ],
@@ -1057,7 +1058,7 @@ def test_run_bounds_large_tool_result_before_next_model_request(
     config = parse_args([
         "Read the file.", "--workspace", str(workspace),
         "--provider-id", "scripted", "--model", "test-model",
-        "--context-window", "2000", "--session", "history.jsonl",
+        "--context-window", "2600", "--session", "history.jsonl",
     ])
 
     result = asyncio.run(run_task(config, provider, StringIO()))

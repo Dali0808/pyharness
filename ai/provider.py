@@ -1,17 +1,27 @@
 # src/pyharness/ai/provider.py
 from __future__ import annotations
 
+import asyncio
 from collections import deque
+from collections.abc import Callable
 from typing import Iterable, Protocol
 
 from .schemas import ChatRequest, ChatResponse, ModelSpec
 
 
 class ProviderError(RuntimeError):
-    def __init__(self, message: str, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        status_code: int | None = None,
+        *,
+        retryable: bool = False,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
-        self.retryable = status_code is None or status_code == 429 or status_code >= 500
+        self.retryable = retryable or status_code == 429 or (
+            status_code is not None and status_code >= 500
+        )
 
 
 class LLMProvider(Protocol):
@@ -47,7 +57,42 @@ class ModelRegistry:
         if provider is None:
             raise ProviderError(f"Unknown model: {model.provider}/{model.id}")
 
-        return await provider.complete(model, request)
+        try:
+            return await provider.complete(model, request)
+        except ProviderError as exc:
+            if not exc.retryable:
+                raise
+            await asyncio.sleep(0.25)
+            return await provider.complete(model, request)
+
+    async def complete_stream(
+        self,
+        model: ModelSpec,
+        request: ChatRequest,
+        on_text: Callable[[str], None],
+    ) -> ChatResponse:
+        provider = self._entries.get((model.provider, model.id))
+        if provider is None:
+            raise ProviderError(f"Unknown model: {model.provider}/{model.id}")
+
+        stream = getattr(provider, "complete_stream", None)
+        if stream is None:
+            return await self.complete(model, request)
+
+        delivered_text = False
+
+        def emit(text: str) -> None:
+            nonlocal delivered_text
+            delivered_text = True
+            on_text(text)
+
+        try:
+            return await stream(model, request, emit)
+        except ProviderError as exc:
+            if delivered_text or not exc.retryable:
+                raise
+            await asyncio.sleep(0.25)
+            return await stream(model, request, emit)
 
 
 class ScriptedProvider:

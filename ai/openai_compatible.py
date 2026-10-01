@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -51,6 +52,29 @@ class OpenAICompatibleProvider:
         model: ModelSpec,
         request: ChatRequest,
     ) -> ChatResponse:
+        payload = self._payload(model, request)
+
+        try:
+            response = await self._client.post("chat/completions", json=payload)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ProviderError(
+                self._extract_error(exc.response),
+                status_code=exc.response.status_code,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ProviderError(
+                f"{self.id} request failed: {exc}", retryable=True
+            ) from exc
+
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise ProviderError("Provider returned invalid JSON") from exc
+
+        return self._parse_response(body, model)
+
+    def _payload(self, model: ModelSpec, request: ChatRequest) -> dict[str, Any]:
         if model.provider != self.id:
             raise ValueError("The model belongs to another provider")
 
@@ -81,23 +105,114 @@ class OpenAICompatibleProvider:
                 for tool in request.tools
             ]
 
+        return payload
+
+    async def complete_stream(
+        self,
+        model: ModelSpec,
+        request: ChatRequest,
+        on_text: Callable[[str], None],
+    ) -> ChatResponse:
+        payload = self._payload(model, request)
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+
+        text_parts: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}
+        metadata: dict[str, Any] = {}
+        usage: dict[str, Any] = {}
+        finish_reason: str | None = None
+        done = False
+        data_lines: list[str] = []
+
         try:
-            response = await self._client.post("chat/completions", json=payload)
-            response.raise_for_status()
+            async with self._client.stream(
+                "POST", "chat/completions", json=payload
+            ) as response:
+                if response.is_error:
+                    await response.aread()
+                response.raise_for_status()
+
+                async for line in response.aiter_lines():
+                    if line.startswith("data:"):
+                        data_lines.append(line[5:].removeprefix(" "))
+                        continue
+                    if line or not data_lines:
+                        continue
+
+                    data = "\n".join(data_lines)
+                    data_lines.clear()
+                    if data == "[DONE]":
+                        done = True
+                        break
+
+                    new_text: list[str] = []
+                    try:
+                        chunk = json.loads(data)
+                        if not isinstance(chunk, dict):
+                            raise ValueError("chunk is not an object")
+                        if "error" in chunk:
+                            raise ProviderError(str(chunk["error"]))
+                        metadata.update({
+                            key: chunk[key]
+                            for key in ("id", "model")
+                            if chunk.get(key) is not None
+                        })
+                        if chunk.get("usage"):
+                            usage = chunk["usage"]
+                        for choice in chunk.get("choices") or []:
+                            if choice.get("index", 0) != 0:
+                                continue
+                            if choice.get("finish_reason") is not None:
+                                finish_reason = choice["finish_reason"]
+                            delta = choice.get("delta") or {}
+                            content = delta.get("content")
+                            if content is not None:
+                                if not isinstance(content, str):
+                                    raise ValueError("text delta is not a string")
+                                if content:
+                                    text_parts.append(content)
+                                    new_text.append(content)
+                            for call in delta.get("tool_calls") or []:
+                                index = call.get("index")
+                                if not isinstance(index, int) or index < 0:
+                                    raise ValueError("invalid tool call index")
+                                current = calls.setdefault(index, {
+                                    "id": "", "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                })
+                                current["id"] += call.get("id") or ""
+                                function = call.get("function") or {}
+                                current["function"]["name"] += function.get("name") or ""
+                                current["function"]["arguments"] += function.get("arguments") or ""
+                    except (AttributeError, TypeError, ValueError, KeyError) as exc:
+                        raise ProviderError("Provider returned invalid stream data") from exc
+                    for text in new_text:
+                        on_text(text)
         except httpx.HTTPStatusError as exc:
             raise ProviderError(
                 self._extract_error(exc.response),
                 status_code=exc.response.status_code,
             ) from exc
         except httpx.HTTPError as exc:
-            raise ProviderError(f"{self.id} request failed: {exc}") from exc
+            raise ProviderError(
+                f"{self.id} request failed: {exc}", retryable=True
+            ) from exc
 
-        try:
-            body = response.json()
-        except ValueError as exc:
-            raise ProviderError("Provider returned invalid JSON") from exc
+        if not done or finish_reason is None:
+            raise ProviderError("Provider stream ended before completion")
 
-        return self._parse_response(body, model)
+        return self._parse_response({
+            **metadata,
+            "choices": [{
+                "finish_reason": finish_reason,
+                "message": {
+                    "content": "".join(text_parts),
+                    "tool_calls": [calls[index] for index in sorted(calls)],
+                },
+            }],
+            "usage": usage,
+        }, model)
 
     @staticmethod
     def _serialize_messages(request: ChatRequest) -> list[dict[str, Any]]:

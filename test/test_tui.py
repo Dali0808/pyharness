@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import platform
 from io import StringIO
 from pathlib import Path
 
@@ -105,6 +107,135 @@ async def test_tui_runs_task_and_renders_answer(tmp_path: Path) -> None:
         assert any("answer:" in log_text(line) for line in lines)
         assert any("Done" in log_text(line) for line in lines)
         assert all("##" not in log_text(line) for line in lines)
+
+
+@pytest.mark.skipif(
+    platform.system() != "Darwin" or not Path("/usr/bin/sandbox-exec").is_file(),
+    reason="requires macOS sandbox-exec",
+)
+@pytest.mark.asyncio
+async def test_tui_approves_exact_command_and_working_directory(tmp_path: Path) -> None:
+    (tmp_path / "note.txt").write_text("checked", encoding="utf-8")
+    provider = ScriptedProvider([
+        ChatResponse(message=AssistantMessage(content=[ToolCallPart(
+            id="command-1", name="run_command",
+            arguments_json=json.dumps({"argv": ["/bin/cat", "note.txt"], "cwd": "."}),
+        )]), finish_reason="tool_calls"),
+        ChatResponse(message=AssistantMessage(content=[TextPart(text="Done")]),
+                     finish_reason="stop"),
+    ])
+    config = parse_tui_args([
+        "--workspace", str(tmp_path), "--provider-id", "scripted",
+        "--model", "test-model", "--session", "history.jsonl",
+    ])
+    app = create_app(config, provider=provider)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#task")
+        await pilot.press("r", "u", "n", "enter")
+        await pilot.pause(0.1)
+        assert len(provider.requests) == 1
+        detail = "\n".join(log_text(line) for line in app.screen.query_one("#diff").lines)
+        assert f"working directory: {tmp_path.resolve()}" in detail
+        assert "command: /bin/cat note.txt" in detail
+        await pilot.click("#apply")
+        await pilot.pause(0.2)
+
+    assert len(provider.requests) == 2
+    result = provider.requests[1].messages[-1]
+    assert result.role == "tool_result"
+    assert result.is_error is False
+    assert "exit_code: 0" in result.content
+    assert "checked" in result.content
+
+
+@pytest.mark.asyncio
+async def test_tui_shows_stream_before_complete_and_saves_only_final(tmp_path: Path) -> None:
+    class StreamingProvider:
+        id = "scripted"
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.continue_stream = asyncio.Event()
+
+        async def complete_stream(self, model, request, on_text):
+            on_text("Hello")
+            self.started.set()
+            await self.continue_stream.wait()
+            on_text(" world")
+            return ChatResponse(
+                message=AssistantMessage(content=[TextPart(text="Hello world")]),
+                finish_reason="stop",
+            )
+
+    provider = StreamingProvider()
+    config = parse_tui_args([
+        "--workspace", str(tmp_path), "--provider-id", "scripted",
+        "--model", "test-model", "--session", "history.jsonl",
+    ])
+    app = create_app(config, provider=provider)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#task")
+        await pilot.press("h", "i", "enter")
+        await provider.started.wait()
+        await pilot.pause(0.05)
+
+        live = app.query_one("#live-response")
+        assert live.display is True
+        assert str(live.render()) == "Hello"
+        snapshot = JsonlSessionStore(tmp_path / "history.jsonl").load()
+        assert [message.role for message in snapshot.messages] == ["user"]
+
+        provider.continue_stream.set()
+        await pilot.pause(0.1)
+        assert live.display is False
+        assert any(
+            "Hello world" in log_text(line)
+            for line in app.query_one("#log").lines
+        )
+
+    snapshot = JsonlSessionStore(tmp_path / "history.jsonl").load()
+    assert [message.role for message in snapshot.messages] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_tui_stop_interrupts_stream_without_saving_partial(tmp_path: Path) -> None:
+    class BlockingStreamProvider:
+        id = "scripted"
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+
+        async def complete_stream(self, model, request, on_text):
+            on_text("unfinished")
+            self.started.set()
+            await asyncio.Event().wait()
+
+    provider = BlockingStreamProvider()
+    config = parse_tui_args([
+        "--workspace", str(tmp_path), "--provider-id", "scripted",
+        "--model", "test-model", "--session", "history.jsonl",
+    ])
+    app = create_app(config, provider=provider)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#task")
+        await pilot.press("s", "t", "o", "p", "enter")
+        await provider.started.wait()
+        await pilot.pause(0.05)
+        assert app.query_one("#live-response").display is True
+        await pilot.click("#stop")
+        await pilot.pause(0.1)
+        assert app.query_one("#live-response").display is False
+        assert any(
+            "partial answer (not saved)" in log_text(line)
+            for line in app.query_one("#log").lines
+        )
+
+    snapshot = JsonlSessionStore(tmp_path / "history.jsonl").load()
+    assert [message.role for message in snapshot.messages] == ["user"]
+    assert snapshot.runs[-1].status == "interrupted"
 
 
 @pytest.mark.asyncio

@@ -11,12 +11,14 @@ from agent.events import (
     AgentEvent,
     ModelRequested,
     ModelResponded,
+    ModelTextDelta,
     RunFailed,
     RunFinished,
     ToolFinished,
     ToolStarted,
 )
 from coding_agent.builtins import resolve_workspace_path
+from coding_agent.command import format_command
 from coding_agent.cli import (
     CliConfig,
     assistant_text,
@@ -124,17 +126,27 @@ def create_app(
             await super()._on_key(event)
 
     class ApprovalScreen(ModalScreen):
-        def __init__(self, diff: str) -> None:
+        def __init__(
+            self,
+            detail: str,
+            *,
+            title: str = "Review proposed change",
+            description: str = "The agent wants to modify a workspace file.",
+            action: str = "Apply",
+        ) -> None:
             super().__init__()
-            self.diff = diff
+            self.detail = detail
+            self.title_text = title
+            self.description = description
+            self.action = action
 
         def compose(self) -> ComposeResult:
             yield Vertical(
-                Static("Review proposed change", classes="modal-title"),
-                Static("The agent wants to modify a workspace file.", classes="modal-copy"),
+                Static(self.title_text, classes="modal-title"),
+                Static(self.description, classes="modal-copy"),
                 RichLog(id="diff", markup=False),
                 Horizontal(
-                    Button("Apply", id="apply", variant="success"),
+                    Button(self.action, id="apply", variant="success"),
                     Button("Reject", id="reject", variant="error"),
                     classes="modal-actions",
                 ),
@@ -142,7 +154,7 @@ def create_app(
             )
 
         def on_mount(self) -> None:
-            self.query_one("#diff", RichLog).write(self.diff)
+            self.query_one("#diff", RichLog).write(self.detail)
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             self.dismiss(event.button.id == "apply")
@@ -253,6 +265,12 @@ def create_app(
             background: transparent;
             scrollbar-color: $primary-darken-1;
         }
+        #live-response {
+            height: auto;
+            max-height: 10;
+            padding: 0 2;
+            overflow-y: auto;
+        }
         #composer {
             height: 6;
             padding: 0 2;
@@ -323,6 +341,7 @@ def create_app(
             self.current_task: asyncio.Task[Any] | None = None
             self.show_steps = False
             self._log_entries: list[tuple[bool, Any]] = []
+            self._live_text = ""
 
         def compose(self) -> ComposeResult:
             yield Header()
@@ -362,6 +381,7 @@ def create_app(
                     id="welcome",
                 ),
                 RichLog(id="log", highlight=True, markup=False),
+                Static("", id="live-response"),
                 id="conversation",
             )
             yield Vertical(
@@ -377,6 +397,7 @@ def create_app(
             if self.provider is None:
                 self.provider = create_provider(self.config)
             self.query_one("#log", RichLog).display = False
+            self.query_one("#live-response", Static).display = False
             self.query_one("#toggle-steps", Button).active_effect_duration = 0
             self.query_one("#task", TaskTextArea).focus()
 
@@ -401,10 +422,22 @@ def create_app(
 
         async def _run(self, task: str) -> None:
             self._set_running(True)
+            self._live_text = ""
+            self.query_one("#live-response", Static).display = False
             self._write(f"> {task}")
             output = StringIO()
 
             def on_event(event: AgentEvent) -> None:
+                if isinstance(event, ModelRequested):
+                    self._live_text = ""
+                    self.query_one("#live-response", Static).display = False
+                if isinstance(event, ModelTextDelta):
+                    self._live_text += event.text
+                    live = self.query_one("#live-response", Static)
+                    live.update(self._live_text)
+                    live.display = True
+                    live.scroll_end(animate=False)
+                    return
                 is_step_event = isinstance(
                     event, (ModelRequested, ModelResponded, ToolStarted, ToolFinished)
                 )
@@ -412,15 +445,23 @@ def create_app(
                     self._write(render_event(event), step=True)
                     return
                 if isinstance(event, RunFinished):
+                    self.query_one("#live-response", Static).display = False
                     self._write("answer:")
                     self._write(Markdown(assistant_text(event.final_message)))
                     return
                 self._write(render_event(event))
                 if isinstance(event, RunFailed):
+                    if self._live_text:
+                        self.query_one("#live-response", Static).display = False
+                        self._write("partial answer (not saved):")
+                        self._write(self._live_text)
                     self._write(f"failed ({event.code}): {event.message}")
 
             async def approve(diff: str) -> bool:
                 return await self._ask_approval(diff)
+
+            async def approve_command(argv: list[str], cwd: Path) -> bool:
+                return await self._ask_command_approval(argv, cwd)
 
             try:
                 config = replace(self.config, task=task)
@@ -430,6 +471,7 @@ def create_app(
                     output,
                     on_event=on_event,
                     approve=approve,
+                    approve_command=approve_command,
                 )
                 if result.exit_code == 0:
                     self._set_status("ready")
@@ -451,6 +493,22 @@ def create_app(
                     decision.set_result(bool(value))
 
             self.push_screen(ApprovalScreen(diff), finished)
+            return await decision
+
+        async def _ask_command_approval(self, argv: list[str], cwd: Path) -> bool:
+            loop = asyncio.get_running_loop()
+            decision: asyncio.Future[bool] = loop.create_future()
+
+            def finished(value: bool | None) -> None:
+                if not decision.done():
+                    decision.set_result(bool(value))
+
+            self.push_screen(ApprovalScreen(
+                format_command(argv, cwd),
+                title="Run verification command",
+                description="This command may modify files in the workspace.",
+                action="Run",
+            ), finished)
             return await decision
 
         def action_stop_run(self) -> None:

@@ -16,6 +16,7 @@ from agent.events import (
     AgentEvent,
     ModelRequested,
     ModelResponded,
+    ModelTextDelta,
     RunFailed,
     RunFinished,
     RunStarted,
@@ -58,6 +59,7 @@ from coding_agent.compaction import (
     ModelSummaryGenerator,
     RequestBudgetManager,
 )
+from coding_agent.command import CommandApproval, create_run_command_tool, format_command
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a coding assistant. Work only through the available "
@@ -221,7 +223,8 @@ def handle_run_event(
     *,
     run_id: str | None = None,
 ) -> None:
-    print(render_event(event), file=output)
+    if not isinstance(event, ModelTextDelta):
+        print(render_event(event), file=output)
 
     if session_store is None:
         return
@@ -243,6 +246,7 @@ async def run_task(
     *,
     on_event: EventHandler | None = None,
     approve: Approval | None = None,
+    approve_command: CommandApproval | None = None,
 ) -> TaskRunResult:
     model = ModelSpec(
         provider=config.provider_id,
@@ -272,6 +276,9 @@ async def run_task(
     tools.register(create_glob_file_tool(config.workspace))
     tools.register(create_grep_file_tool(config.workspace))
     tools.register(create_edit_file_tool(config.workspace, approval))
+    tools.register(create_run_command_tool(
+        config.workspace, approve_command or _deny_command
+    ))
 
     user_message = UserMessage(content=config.task)
     budget: RequestBudgetManager | None = None
@@ -393,6 +400,7 @@ def main(
     provider_factory: ProviderFactory | None = None,
     output: TextIO | None = None,
     approve: Approval | None = None,
+    approve_command: CommandApproval | None = None,
 ) -> int:
     config = parse_args(argv)
     factory = provider_factory or create_provider
@@ -404,7 +412,10 @@ def main(
             else _allow_change(diff)
         )
 
-    return asyncio.run(_run_main(config, factory, stream, approve))
+    return asyncio.run(_run_main(
+        config, factory, stream, approve,
+        approve_command or (lambda argv, cwd: _cli_command_approval(argv, cwd, stream)),
+    ))
 
 
 async def _run_main(
@@ -412,6 +423,7 @@ async def _run_main(
     provider_factory: ProviderFactory,
     output: TextIO,
     approve: Approval,
+    approve_command: CommandApproval,
 ) -> int:
     provider = provider_factory(config)
 
@@ -421,6 +433,7 @@ async def _run_main(
             provider,
             output,
             approve=approve,
+            approve_command=approve_command,
         )
         return task_result.exit_code
     finally:
@@ -441,6 +454,10 @@ def _allow_change(_: str) -> bool:
     return True
 
 
+def _deny_command(_: list[str], __: Path) -> bool:
+    return False
+
+
 def _cli_approval(diff: str, output: TextIO) -> bool:
     print("proposed change:", file=output)
     print(diff, file=output, end="" if diff.endswith("\n") else "\n")
@@ -450,12 +467,23 @@ def _cli_approval(diff: str, output: TextIO) -> bool:
     return answer.strip().lower() in {"y", "yes"}
 
 
+def _cli_command_approval(argv: list[str], cwd: Path, output: TextIO) -> bool:
+    print(format_command(argv, cwd), file=output)
+    if not sys.stdin.isatty():
+        return False
+    answer = input("Run this command? [y/N] ")
+    return answer.strip().lower() in {"y", "yes"}
+
+
 def render_event(event: AgentEvent) -> str:
     if isinstance(event, RunStarted):
         return "run started"
 
     if isinstance(event, ModelRequested):
         return f"step {event.step}: requesting model"
+
+    if isinstance(event, ModelTextDelta):
+        return f"step {event.step}: model streamed text"
 
     if isinstance(event, ModelResponded):
         return f"step {event.step}: model responded"
