@@ -1,6 +1,6 @@
 # pyharness 优化开发交接
 
-> 更新于 2026-10-01，当前工作树已完成最小 TUI，以及 O5 的流式文本、有限重试和沙箱终端工具开发。长期约束见 [AGENTS.md](AGENTS.md)；本文件只记录进度、取舍与阶段验收。开始新阶段前以当前代码为准。
+> 更新于 2026-10-02，O5 的流式文本、有限重试和沙箱终端工具已开发并完成用户验收。长期约束见 [AGENTS.md](AGENTS.md)；本文件只记录进度、取舍与阶段验收。开始新阶段前以当前代码为准。
 
 ## 目标与取舍
 
@@ -18,7 +18,7 @@
 | O2 Session 与上下文 | 功能已完成，标准环境待复验 | `c401242` 已加入 JSONL v2 恢复、v1 迁移、配置校验、逐次请求预算和压缩失败处理。 |
 | O3 CLI 编码闭环 | 已完成 | 已加入有界搜索、按行读取、局部编辑、diff 审批和冲突保护；离线测试已通过。 |
 | O4 最小 TUI | 已完成 | Textual TUI 主链路、审批、停止、会话显示和交互样式已完成；离线回归通过，并已完成真实模型试跑。 |
-| O5 必要运行增强 | 进行中 | 流式文本、有限重试和终端工具已实现；端到端真实编码验收待做。 |
+| O5 必要运行增强 | 已完成 | 流式文本、有限重试和沙箱终端工具已实现；用户已完成真实 TUI 验收。 |
 | O6 真实任务验收 | 未开始 | 少量可复现任务、结果记录和安装使用文档。 |
 
 O3 的离线测试已通过。此前本机默认 `uv` 缓存和 pytest capture 曾导致环境错误；用户已在本机确认测试通过。
@@ -37,8 +37,6 @@ O4 当前验证记录：`test/test_tui.py` 为 6 passed；受限环境全套回�
 - 保留了现有 `read_file`、`write_file` 和 `list_dir` 的兼容性；CLI 中的 `write_file` 与 `edit_file` 都经过同一套 diff 审批和文件变更检查。
 - 已覆盖搜索、行读取、审批拒绝、唯一匹配和补丁冲突测试。
 
-## 剩余阶段
-
 ### O5：按真实使用结果补运行能力
 
 流式文本已接入 OpenAI-compatible Provider、Agent 事件和 TUI。TUI 增量显示回答；完整响应才写入 Session，停止后只显示未保存的部分回答。现有非流式 Provider 继续使用原接口。
@@ -47,9 +45,11 @@ O4 当前验证记录：`test/test_tui.py` 为 6 passed；受限环境全套回�
 
 `run_command` 已接入 Agent 和 TUI：模型提供参数数组与工作区内目录；界面展示完整命令和解析后的目录，批准后才由 macOS `sandbox-exec` 运行。工作目录越界在审批前由路径校验拒绝；进程运行时默认拒绝网络，写入限工作区，读取限工作区、系统目录和可执行文件运行目录。最长运行 30 秒，输出最多 32 KB。拒绝、沙箱不可用、超时与取消均有处理；Session 恢复沿用已有的未知结果错误配对，不自动重放命令。Apple 已弃用 `sandbox-exec`，因此这一路径目前仅面向可用的 macOS 环境。
 
-终端工具本次离线验证：`test/test_command.py`、`test/test_cli.py`、`test/test_tui.py` 为 36 passed、1 deselected；受限环境全套为 206 passed、1 deselected。命令：`env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -p no:capture -p pytest_asyncio.plugin -q -k 'not test_parse_args_rejects_session_path_outside_workspace'`。deselected 项依赖本机禁用的 pytest capture fixture；尚未进行真实模型端到端命令试跑。
+终端工具当次离线验证：`test/test_command.py`、`test/test_cli.py`、`test/test_tui.py` 为 36 passed、1 deselected；受限环境全套为 206 passed、1 deselected。命令：`env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -p no:capture -p pytest_asyncio.plugin -q -k 'not test_parse_args_rejects_session_path_outside_workspace'`。deselected 项依赖本机禁用的 pytest capture fixture；当次尚未进行真实模型端到端命令试跑。
 
-2026-10-01 沙箱定向复验：`env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -p no:capture -p pytest_asyncio.plugin -q test/test_command.py test/test_tui.py -k 'command or tui_approves_exact_command_and_working_directory'`，结果为 8 passed、8 deselected。覆盖 TUI 展示与批准、审批拒绝、越界目录、沙箱不可用、工作区外读取和网络拒绝、超时、输出上限及取消清理。当前没有 CPU、内存或磁盘配额；获批命令仍可修改工作区。未进行真实模型端到端命令试跑。
+2026-10-01 沙箱定向复验：`env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -p no:capture -p pytest_asyncio.plugin -q test/test_command.py test/test_tui.py -k 'command or tui_approves_exact_command_and_working_directory'`，结果为 8 passed、8 deselected。覆盖 TUI 展示与批准、审批拒绝、越界目录、沙箱不可用、工作区外读取和网络拒绝、超时、输出上限及取消清理。当前没有 CPU、内存或磁盘配额；获批命令仍可修改工作区。当次未进行真实模型端到端命令试跑。
+
+2026-10-02 用户确认已自行完成真实模型 TUI 的最后验收：Agent 选择验证命令，TUI 展示命令和工作目录，用户批准后在沙箱中执行并收到结果。具体模型、参数、命令、成本和输出未提供，因此此记录只作为功能验收，不计入可复现的真实编码任务评测。
 
 有限重试的离线验证：`test/test_ai.py`、`test/test_loop.py`、`test/test_tui.py`、`test/test_compaction.py` 为 51 passed；受限环境全套为 198 passed、1 deselected。命令：`env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -p no:capture -p pytest_asyncio.plugin -q -k 'not test_parse_args_rejects_session_path_outside_workspace'`。本机 `uv run --locked pytest -q test/test_ai.py test/test_loop.py test/test_tui.py test/test_compaction.py` 退出码为 139，仍需在正常环境复验。
 
@@ -60,6 +60,8 @@ O4 当前验证记录：`test/test_tui.py` 为 6 passed；受限环境全套回�
 - 命令必须在进程级沙箱中运行，限制时长和输出量；沙箱不可用时不执行。停止任务时终止子进程，将退出码和错误摘要返回 Agent；执行结果未知时不自动重放。
 - 验收：TUI 可增量显示回答并停止流式请求；离线模拟一次限流后成功；Agent 可选择已有验证命令，经展示和批准后在沙箱内执行并得到有界结果。覆盖审批拒绝、超时或取消、沙箱不可用以及结果未知时不重放的关键失败路径。
 
+## 剩余阶段
+
 ### O6：真实任务与交付
 
 - 选 3–5 个可复现的通用 Python 维护任务，覆盖定位、修改和测试。记录初始版本、模型配置、任务结果、非目标改动、耗时与 token；样本少时报告逐项结果，不宣称通用编码成功率。
@@ -68,4 +70,4 @@ O4 当前验证记录：`test/test_tui.py` 为 6 passed；受限环境全套回�
 
 ## 下一步
 
-下一步继续 O5：用真实编码任务验收命令选择、TUI 审批和沙箱执行。每阶段完成时更新状态、提交、测试命令和真实模型试跑记录；阶段可以小步交叉推进，但只有验收成立才标为完成。
+下一步进入 O6：选择少量可复现的真实编码任务，记录结果并完善安装与使用文档。每阶段完成时更新状态、提交、测试命令和真实模型试跑记录；阶段可以小步交叉推进，但只有验收成立才标为完成。
