@@ -114,12 +114,15 @@ async def test_tui_runs_task_and_renders_answer(tmp_path: Path) -> None:
     reason="requires macOS sandbox-exec",
 )
 @pytest.mark.asyncio
-async def test_tui_approves_exact_command_and_working_directory(tmp_path: Path) -> None:
+@pytest.mark.parametrize("filename, exit_code", [("note.txt", 0), ("missing.txt", 1)])
+async def test_tui_approves_exact_command_and_working_directory(
+    tmp_path: Path, filename: str, exit_code: int,
+) -> None:
     (tmp_path / "note.txt").write_text("checked", encoding="utf-8")
     provider = ScriptedProvider([
         ChatResponse(message=AssistantMessage(content=[ToolCallPart(
             id="command-1", name="run_command",
-            arguments_json=json.dumps({"argv": ["/bin/cat", "note.txt"], "cwd": "."}),
+            arguments_json=json.dumps({"argv": ["/bin/cat", filename], "cwd": "."}),
         )]), finish_reason="tool_calls"),
         ChatResponse(message=AssistantMessage(content=[TextPart(text="Done")]),
                      finish_reason="stop"),
@@ -137,16 +140,23 @@ async def test_tui_approves_exact_command_and_working_directory(tmp_path: Path) 
         assert len(provider.requests) == 1
         detail = "\n".join(log_text(line) for line in app.screen.query_one("#diff").lines)
         assert f"working directory: {tmp_path.resolve()}" in detail
-        assert "command: /bin/cat note.txt" in detail
+        assert f"command: /bin/cat {filename}" in detail
         await pilot.click("#apply")
         await pilot.pause(0.2)
+        assert app.show_steps is False
+        visible = "\n".join(log_text(line) for line in app.query_one("#log").lines)
+        assert "command result:" in visible
+        assert f"exit_code: {exit_code}" in visible
+        assert "output:" in visible
 
     assert len(provider.requests) == 2
     result = provider.requests[1].messages[-1]
     assert result.role == "tool_result"
     assert result.is_error is False
-    assert "exit_code: 0" in result.content
-    assert "checked" in result.content
+    assert f"exit_code: {exit_code}" in result.content
+    if exit_code == 0:
+        assert "checked" in visible
+        assert "checked" in result.content
 
 
 @pytest.mark.asyncio

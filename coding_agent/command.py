@@ -55,21 +55,29 @@ def create_run_command_tool(
 
         if "/" in argv[0]:
             candidate = Path(argv[0])
-            executable = (candidate if candidate.is_absolute() else cwd / candidate).resolve(strict=True)
+            launch_path = candidate if candidate.is_absolute() else cwd / candidate
         else:
             found = shutil.which(argv[0])
             if found is None:
                 raise FileNotFoundError(argv[0])
-            executable = Path(found).resolve(strict=True)
+            launch_path = Path(found).absolute()
+        executable = launch_path.resolve(strict=True)
         if not executable.is_file():
             raise FileNotFoundError(argv[0])
 
         runtime_root = executable.parent.parent if executable.parent.name == "bin" else executable.parent
         if runtime_root in (Path.home(), Path("/")):
             runtime_root = executable.parent
-        read_paths = [root, runtime_root, *(Path(path) for path in ("/usr", "/System", "/Library"))]
+        launch_root = launch_path.parent.parent if launch_path.parent.name == "bin" else launch_path.parent
+        if launch_root in (Path.home(), Path("/")):
+            launch_root = launch_path.parent
+        read_paths = [root, runtime_root, launch_root, *(Path(path) for path in ("/usr", "/System", "/Library"))]
         profile = (
             "(version 1) (deny default) (allow process*) (allow mach-lookup) "
+            "(allow file-read* file-write* (literal \"/dev/null\")) "
+            "(allow file-read-metadata "
+            + " ".join(f"(literal {json.dumps(str(path))})" for path in root.parents)
+            + ") "
             "(allow file-read* (literal \"/\") "
             + " ".join(f"(subpath {json.dumps(str(path))})" for path in read_paths)
             + f") (allow file-write* (subpath {json.dumps(str(root))}))"
@@ -85,7 +93,7 @@ def create_run_command_tool(
                 "LANG": os.environ.get("LANG", "C"),
             }
             process = await asyncio.create_subprocess_exec(
-                "/usr/bin/sandbox-exec", "-p", profile, str(executable), *argv[1:],
+                "/usr/bin/sandbox-exec", "-p", profile, str(launch_path), *argv[1:],
                 cwd=cwd, env=env, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT, start_new_session=True,
             )

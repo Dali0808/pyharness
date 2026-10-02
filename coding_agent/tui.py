@@ -443,6 +443,8 @@ def create_app(
                 )
                 if is_step_event:
                     self._write(render_event(event), step=True)
+                    if isinstance(event, ToolFinished) and event.result.tool_name == "run_command":
+                        self._write(f"command result:\n{event.result.content}")
                     return
                 if isinstance(event, RunFinished):
                     self.query_one("#live-response", Static).display = False

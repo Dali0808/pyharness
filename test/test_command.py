@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import sys
+import venv
 from pathlib import Path
 
 import pytest
@@ -81,6 +82,12 @@ async def test_command_runs_in_sandbox_and_blocks_outside_read(tmp_path: Path) -
     tools = registry(workspace, approve)
     success = await tools.execute(command_call(["/bin/cat", "inside.txt"]))
     python = await tools.execute(command_call([sys.executable, "-c", "print('python-ok')"]))
+    parent_metadata = await tools.execute(command_call([
+        sys.executable, "-c", "from pathlib import Path; print(Path.cwd().parent.is_dir())",
+    ]))
+    devnull = await tools.execute(command_call([
+        sys.executable, "-c", "open('/dev/null', 'w').write('ok')",
+    ]))
     blocked = await tools.execute(command_call(["/bin/cat", str(outside)]))
     network = await tools.execute(command_call([
         sys.executable, "-c",
@@ -92,6 +99,9 @@ async def test_command_runs_in_sandbox_and_blocks_outside_read(tmp_path: Path) -
     assert "visible" in success.content
     assert "exit_code: 0" in python.content
     assert "python-ok" in python.content
+    assert "exit_code: 0" in parent_metadata.content
+    assert "True" in parent_metadata.content
+    assert "exit_code: 0" in devnull.content
     assert not blocked.is_error
     assert "exit_code: 1" in blocked.content
     assert "secret" not in blocked.content
@@ -100,9 +110,50 @@ async def test_command_runs_in_sandbox_and_blocks_outside_read(tmp_path: Path) -
     assert approved == [
         (["/bin/cat", "inside.txt"], workspace),
         ([sys.executable, "-c", "print('python-ok')"], workspace),
+        ([sys.executable, "-c", "from pathlib import Path; print(Path.cwd().parent.is_dir())"], workspace),
+        ([sys.executable, "-c", "open('/dev/null', 'w').write('ok')"], workspace),
         (["/bin/cat", str(outside)], workspace),
         ([sys.executable, "-c", "import socket; socket.socket().bind(('127.0.0.1', 0))"], workspace),
     ]
+
+
+@pytest.mark.skipif(
+    platform.system() != "Darwin" or not Path("/usr/bin/sandbox-exec").is_file(),
+    reason="requires macOS sandbox-exec",
+)
+@pytest.mark.asyncio
+async def test_command_preserves_workspace_virtualenv_python(tmp_path: Path) -> None:
+    environment = tmp_path / ".venv"
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(environment)
+
+    result = await registry(tmp_path, lambda argv, cwd: True).execute(
+        command_call([
+            str(environment / "bin" / "python"),
+            "-c", "import sys; print(sys.prefix)",
+        ])
+    )
+
+    assert "exit_code: 0" in result.content
+    assert str(environment) in result.content
+
+
+@pytest.mark.skipif(
+    platform.system() != "Darwin" or not Path("/usr/bin/sandbox-exec").is_file(),
+    reason="requires macOS sandbox-exec",
+)
+@pytest.mark.asyncio
+async def test_command_resolves_relative_path_from_search(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "coding_agent.command.shutil.which",
+        lambda _: os.path.relpath(sys.executable),
+    )
+
+    result = await registry(tmp_path, lambda argv, cwd: True).execute(
+        command_call(["python", "-c", "print('relative-path-ok')"])
+    )
+
+    assert "exit_code: 0" in result.content
+    assert "relative-path-ok" in result.content
 
 
 @pytest.mark.skipif(

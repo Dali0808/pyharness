@@ -2,6 +2,38 @@
 
 A small Python agent harness with workspace tools and deterministic evaluation cases.
 
+## Quick start
+
+Requires Python 3.11+, `uv`, and an OpenAI-compatible model API. From the
+pyharness checkout, install the locked dependencies and start the TUI:
+
+```sh
+uv sync --locked
+uv run --locked python -m coding_agent.tui \
+  --workspace /path/to/python-project \
+  --model deepseek-chat \
+  --base-url https://api.deepseek.com/v1 \
+  --api-key-env DEEPSEEK_API_KEY
+```
+
+Set `DEEPSEEK_API_KEY` in the shell before starting; the key is read only from
+that named environment variable. Substitute your model, URL, and key variable
+for another OpenAI-compatible provider. Start the command from the pyharness
+checkout even when the target workspace is a different or older repository.
+
+Enter a task and press Enter; Shift+Enter inserts a newline. Review each
+proposed file diff before applying it. The agent may also propose a project
+test or build command: review its full arguments and working directory before
+approving. The TUI shows the command's exit code and bounded output in the
+session log, even when steps are hidden. A nonzero command exit does not itself
+end the agent run.
+
+The default session is `.runtime/session.jsonl` inside the workspace. Restart
+the same TUI command to resume it; keep the workspace, model settings, and
+system prompt unchanged. Sessions can contain source code and tool output, so
+keep them local and private. Use `--session another/path.jsonl` for a separate
+workspace-relative session.
+
 ## Streaming answers
 
 The TUI displays OpenAI-compatible chat completion text as it arrives. Tool calls
@@ -23,6 +55,11 @@ limit, and a 32 KB output limit. Rejected commands and systems without
 `sandbox-exec` do not execute. Stopping the run terminates the command process
 group. The tool does not automatically rerun commands with unknown outcomes.
 This feature requires macOS; `sandbox-exec` is deprecated by Apple.
+The sandbox allows reads in the workspace, system directories, and the approved
+executable's runtime; writes are limited to the workspace. `/dev/null` is
+available for tools such as pytest. There is no CPU, memory, or disk quota, and
+an approved command can still change workspace files. Command execution fails
+closed when the sandbox is unavailable.
 
 ## Development checks
 
@@ -32,6 +69,8 @@ uv run --locked pytest -q
 ```
 
 The existing deterministic catalog contains 20 cases; it checks the evaluation framework and does not measure real-world coding success.
+See [O6_REAL_TASKS.md](O6_REAL_TASKS.md) for reproducible real-model task
+records, including failures and verification limits.
 
 ## Evaluation results
 
