@@ -7,6 +7,8 @@ from io import StringIO
 from pathlib import Path
 
 import pytest
+from textual.geometry import Offset
+from textual.selection import Selection
 
 from ai.provider import ScriptedProvider
 from ai.schemas import AssistantMessage, ChatResponse, TextPart, ToolCallPart
@@ -29,7 +31,124 @@ def test_parse_tui_args_uses_workspace_scoped_session(tmp_path: Path) -> None:
     assert config.session_path == (
         tmp_path / ".runtime" / "session.jsonl"
     ).resolve()
-    assert config.session_path.parent.is_dir()
+    assert not config.session_path.parent.exists()
+
+
+def test_parse_tui_args_defaults_to_current_directory(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    config = parse_tui_args([])
+
+    assert config.workspace == tmp_path.resolve()
+    assert config.model_id == ""
+    assert config.max_steps == 10
+    assert config.session_path == tmp_path / ".runtime" / "session.jsonl"
+
+
+@pytest.mark.asyncio
+async def test_tui_declines_untrusted_workspace(tmp_path: Path) -> None:
+    app = create_app(parse_tui_args(["--workspace", str(tmp_path)]))
+
+    async with app.run_test() as pilot:
+        assert app.query_one("#welcome").display is False
+        assert app.query_one("#composer").display is False
+        assert str(tmp_path) in str(app.screen.query_one(".modal-copy").render())
+        await pilot.click("#decline")
+        await pilot.pause()
+        assert app._trusted is False
+
+    assert not (tmp_path / ".runtime").exists()
+
+
+@pytest.mark.asyncio
+async def test_tui_slash_settings_persist_without_running_model(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "not-a-real-secret")
+    provider = ScriptedProvider([])
+    app = create_app(parse_tui_args(["--workspace", str(tmp_path)]), provider=provider)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#trust")
+        await pilot.pause()
+        task = app.query_one("#task")
+        task.load_text("hello")
+        await pilot.press("enter")
+        assert "set /model" in str(app.query_one("#status").render())
+        assert not provider.requests
+        assert not (tmp_path / ".runtime").exists()
+
+        for command in (
+            "/model deepseek-chat",
+            "/provider openai",
+            "/base-url https://api.deepseek.com/v1",
+            "/api-key-env DEEPSEEK_API_KEY",
+            "/max-steps 30",
+            "/context-window 8192",
+        ):
+            task.load_text(command)
+            await pilot.press("enter")
+            await pilot.pause()
+
+        task.load_text("/max-steps 0")
+        await pilot.press("enter")
+        assert app.config.max_steps == 30
+        task.load_text("/base-url https://user:pass@example.com")
+        await pilot.press("enter")
+        assert app.config.base_url == "https://api.deepseek.com/v1"
+        task.load_text("/base-url https://example.com/v1?key=secret")
+        await pilot.press("enter")
+        assert app.config.base_url == "https://api.deepseek.com/v1"
+        task.load_text("/api-key-env INVALID-NAME")
+        await pilot.press("enter")
+        assert app.config.api_key_env == "DEEPSEEK_API_KEY"
+        task.load_text("/settings")
+        await pilot.press("enter")
+        assert any("deepseek-chat" in log_text(line) for line in app.query_one("#log").lines)
+
+        task.load_text("/session ../outside.jsonl")
+        await pilot.press("enter")
+        assert app.config.session_path == tmp_path / ".runtime" / "session.jsonl"
+        task.load_text("/session .runtime/new.jsonl")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.config.session_path == tmp_path / ".runtime" / "new.jsonl"
+        assert app.query_one("#welcome").display is True
+
+    restored = parse_tui_args(["--workspace", str(tmp_path)])
+    assert restored.model_id == "deepseek-chat"
+    assert restored.base_url == "https://api.deepseek.com/v1"
+    assert restored.api_key_env == "DEEPSEEK_API_KEY"
+    assert restored.max_steps == 30
+    assert restored.context_window == 8192
+    assert restored.session_path == tmp_path / ".runtime" / "new.jsonl"
+    assert "not-a-real-secret" not in (tmp_path / ".runtime" / "lario.json").read_text()
+    assert not provider.requests
+    assert not restored.session_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_tui_uses_slash_model_for_next_task(tmp_path: Path) -> None:
+    provider = ScriptedProvider([
+        ChatResponse(
+            message=AssistantMessage(content=[TextPart(text="Done")]),
+            finish_reason="stop",
+        )
+    ])
+    app = create_app(parse_tui_args([
+        "--workspace", str(tmp_path), "--provider-id", "scripted",
+    ]), provider=provider)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#trust")
+        await pilot.pause()
+        task = app.query_one("#task")
+        task.load_text("/model test-model")
+        await pilot.press("enter")
+        task.load_text("hello")
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+
+    assert provider.requests[0].messages[-1].content == "hello"
+    snapshot = JsonlSessionStore(tmp_path / ".runtime" / "session.jsonl").load()
+    assert snapshot.metadata.model.id == "test-model"
 
 
 class BlockingProvider:
@@ -67,10 +186,11 @@ async def test_cancelled_run_records_interrupted_session(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_tui_runs_task_and_renders_answer(tmp_path: Path) -> None:
+async def test_tui_runs_task_and_renders_answer(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("coding_agent.tui.platform.system", lambda: "Linux")
     provider = ScriptedProvider([
         ChatResponse(
-            message=AssistantMessage(content=[TextPart(text="Done")]),
+            message=AssistantMessage(content=[TextPart(text="Done\n\nMore")]),
             finish_reason="stop",
         )
     ])
@@ -82,6 +202,10 @@ async def test_tui_runs_task_and_renders_answer(tmp_path: Path) -> None:
 
     async with app.run_test() as pilot:
         assert app.title == "Lario"
+        assert app.screen.query_one("#trust-dialog")
+        assert app.query_one("#welcome").display is False
+        await pilot.click("#trust")
+        await pilot.pause()
         assert app.query_one("#welcome").display is True
         assert app.query_one("#log").display is False
         assert "workspace:" not in str(app.query_one("#status").render())
@@ -104,9 +228,44 @@ async def test_tui_runs_task_and_renders_answer(tmp_path: Path) -> None:
         assert app.query_one("#log").display is True
         assert str(app.query_one("#status").render()).endswith("| ready")
         lines = app.query_one("#log").lines
-        assert any("answer:" in log_text(line) for line in lines)
-        assert any("Done" in log_text(line) for line in lines)
+        question_line = next(line for line in lines if "❯ hi" in log_text(line))
+        assert any(
+            segment.style and segment.style.bgcolor
+            and segment.style.bgcolor.name == "#303030"
+            for segment in question_line._segments
+        )
+        assert question_line._segments[-1].style.bgcolor.name == "#303030"
+        assert any("⏺ Done" in log_text(line) for line in lines)
+        assert any("More" in log_text(line) for line in lines)
         assert all("##" not in log_text(line) for line in lines)
+        assert next(i for i, line in enumerate(lines) if "❯ hi" in log_text(line)) < next(
+            i for i, line in enumerate(lines) if "⏺ Done" in log_text(line)
+        )
+        log = app.query_one("#log")
+        answer_line = next(i for i, line in enumerate(lines) if "Done" in log_text(line))
+        assert all(
+            not segment.style or not segment.style.bgcolor
+            for segment in lines[answer_line]._segments if "Done" in segment.text
+        )
+        answer_offset = log_text(lines[answer_line]).index("Done")
+        app.screen.selections = {
+            log: Selection.from_offsets(
+                Offset(answer_offset, answer_line), Offset(answer_offset + 4, answer_line)
+            )
+        }
+        log.render_line(answer_line)
+        log.focus()
+        await pilot.press("ctrl+c")
+        assert app.clipboard == "Done"
+
+        copied = []
+        monkeypatch.setattr("coding_agent.tui.platform.system", lambda: "Darwin")
+        monkeypatch.setattr(
+            "coding_agent.tui.subprocess.run",
+            lambda *args, **kwargs: copied.append((args, kwargs)),
+        )
+        app.copy_to_clipboard("Done")
+        assert copied == [((["pbcopy"],), {"input": "Done", "text": True, "check": False})]
 
 
 @pytest.mark.skipif(
@@ -134,6 +293,8 @@ async def test_tui_approves_exact_command_and_working_directory(
     app = create_app(config, provider=provider)
 
     async with app.run_test() as pilot:
+        await pilot.click("#trust")
+        await pilot.pause()
         await pilot.click("#task")
         await pilot.press("r", "u", "n", "enter")
         await pilot.pause(0.1)
@@ -186,24 +347,25 @@ async def test_tui_shows_stream_before_complete_and_saves_only_final(tmp_path: P
     app = create_app(config, provider=provider)
 
     async with app.run_test() as pilot:
+        await pilot.click("#trust")
+        await pilot.pause()
         await pilot.click("#task")
         await pilot.press("h", "i", "enter")
         await provider.started.wait()
         await pilot.pause(0.05)
 
-        live = app.query_one("#live-response")
-        assert live.display is True
-        assert str(live.render()) == "Hello"
+        lines = app.query_one("#log").lines
+        live_line = next(i for i, line in enumerate(lines) if "⏺ Hello" in log_text(line))
+        assert live_line > next(i for i, line in enumerate(lines) if "❯ hi" in log_text(line))
+        assert not app.query("#live-response")
         snapshot = JsonlSessionStore(tmp_path / "history.jsonl").load()
         assert [message.role for message in snapshot.messages] == ["user"]
 
         provider.continue_stream.set()
         await pilot.pause(0.1)
-        assert live.display is False
-        assert any(
-            "Hello world" in log_text(line)
-            for line in app.query_one("#log").lines
-        )
+        lines = app.query_one("#log").lines
+        assert "⏺ Hello world" in log_text(lines[live_line])
+        assert sum("Hello world" in log_text(line) for line in lines) == 1
 
     snapshot = JsonlSessionStore(tmp_path / "history.jsonl").load()
     assert [message.role for message in snapshot.messages] == ["user", "assistant"]
@@ -230,18 +392,22 @@ async def test_tui_stop_interrupts_stream_without_saving_partial(tmp_path: Path)
     app = create_app(config, provider=provider)
 
     async with app.run_test() as pilot:
+        await pilot.click("#trust")
+        await pilot.pause()
         await pilot.click("#task")
         await pilot.press("s", "t", "o", "p", "enter")
         await provider.started.wait()
         await pilot.pause(0.05)
-        assert app.query_one("#live-response").display is True
+        assert any("⏺ unfinished" in log_text(line) for line in app.query_one("#log").lines)
         await pilot.click("#stop")
         await pilot.pause(0.1)
-        assert app.query_one("#live-response").display is False
         assert any(
             "partial answer (not saved)" in log_text(line)
             for line in app.query_one("#log").lines
         )
+        assert sum(
+            "unfinished" in log_text(line) for line in app.query_one("#log").lines
+        ) == 1
 
     snapshot = JsonlSessionStore(tmp_path / "history.jsonl").load()
     assert [message.role for message in snapshot.messages] == ["user"]
@@ -272,6 +438,8 @@ async def test_tui_hides_steps_until_requested(tmp_path: Path) -> None:
     app = create_app(config, provider=provider)
 
     async with app.run_test() as pilot:
+        await pilot.click("#trust")
+        await pilot.pause()
         await pilot.click("#task")
         await pilot.press("h", "i", "enter")
         await pilot.pause(0.2)
@@ -308,6 +476,8 @@ async def test_tui_submits_multiline_task(tmp_path: Path) -> None:
     app = create_app(config, provider=provider)
 
     async with app.run_test() as pilot:
+        await pilot.click("#trust")
+        await pilot.pause()
         task_input = app.query_one("#task")
         task_input.load_text("first line")
         task_input.move_cursor((0, len("first line")))
@@ -349,6 +519,8 @@ async def test_tui_rejects_edit_without_changing_file(tmp_path: Path) -> None:
     app = create_app(config, provider=provider)
 
     async with app.run_test() as pilot:
+        await pilot.click("#trust")
+        await pilot.pause()
         await pilot.click("#task")
         await pilot.press("f", "i", "x", "enter")
         await pilot.pause(0.2)

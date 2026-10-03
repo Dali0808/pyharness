@@ -2,10 +2,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
+import platform
+import subprocess
+import tempfile
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import urlsplit
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from agent.events import (
     AgentEvent,
@@ -21,6 +28,7 @@ from coding_agent.builtins import resolve_workspace_path
 from coding_agent.command import format_command
 from coding_agent.cli import (
     CliConfig,
+    DEFAULT_SYSTEM_PROMPT,
     assistant_text,
     close_provider,
     create_provider,
@@ -29,47 +37,116 @@ from coding_agent.cli import (
 )
 
 
+class TuiSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    provider_id: str = Field(default="openai", min_length=1)
+    model_id: str = ""
+    base_url: str = "https://api.openai.com/v1"
+    api_key_env: str = Field(default="OPENAI_API_KEY", pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+    max_steps: int = Field(default=10, gt=0)
+    context_window: int | None = Field(default=None, gt=0)
+    session: str = Field(default=".runtime/session.jsonl", min_length=1)
+
+    @field_validator("base_url")
+    @classmethod
+    def valid_base_url(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("base URL must be http(s) without credentials, query, or fragment")
+        return value
+
+
+def _settings_path(workspace: Path) -> Path:
+    return resolve_workspace_path(workspace, ".runtime/lario.json")
+
+
+def _load_settings(workspace: Path) -> TuiSettings:
+    path = _settings_path(workspace)
+    if not path.exists():
+        return TuiSettings()
+    if path.stat().st_size > 16_384:
+        raise ValueError("settings file is too large")
+    return TuiSettings.model_validate_json(path.read_bytes())
+
+
+def _save_settings(config: CliConfig) -> None:
+    path = _settings_path(config.workspace)
+    values = {
+        field: getattr(config, field)
+        for field in TuiSettings.model_fields
+        if field != "session"
+    }
+    values["session"] = str(config.session_path.relative_to(config.workspace))
+    settings = TuiSettings.model_validate(values)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", dir=path.parent, encoding="utf-8", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write(settings.model_dump_json(indent=2) + "\n")
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def parse_tui_args(argv: Sequence[str] | None = None) -> CliConfig:
     parser = argparse.ArgumentParser(
         description="Run the pyharness Textual interface."
     )
     parser.add_argument("--workspace", default=".")
-    parser.add_argument("--session", default=".runtime/session.jsonl")
-    parser.add_argument("--provider-id", default="openai")
-    parser.add_argument("--model", required=True)
+    parser.add_argument("--session")
+    parser.add_argument("--provider-id")
+    parser.add_argument("--model")
     parser.add_argument("--context-window", type=_positive_int, default=None)
-    parser.add_argument("--base-url", default="https://api.openai.com/v1")
-    parser.add_argument("--api-key-env", default="OPENAI_API_KEY")
+    parser.add_argument("--base-url")
+    parser.add_argument("--api-key-env")
     parser.add_argument(
         "--system-prompt",
-        default=(
-            "You are a coding assistant. Work only through the available "
-            "workspace tools."
-        ),
+        default=DEFAULT_SYSTEM_PROMPT,
     )
-    parser.add_argument("--max-steps", type=_positive_int, default=10)
+    parser.add_argument("--max-steps", type=_positive_int)
     args = parser.parse_args(argv)
 
     workspace = Path(args.workspace).resolve(strict=False)
     if not workspace.is_dir():
         parser.error(f"workspace is not a directory: {workspace}")
     try:
-        session_path = resolve_workspace_path(workspace, args.session)
-    except (OSError, ValueError) as exc:
-        parser.error(f"invalid session path: {exc}")
-    session_path.parent.mkdir(parents=True, exist_ok=True)
+        values = _load_settings(workspace).model_dump()
+        for field in (
+            "provider_id", "model_id", "base_url", "api_key_env", "max_steps", "context_window"
+        ):
+            override = getattr(args, "model" if field == "model_id" else field)
+            if override is not None:
+                values[field] = override
+        settings = TuiSettings.model_validate(values)
+        session_path = resolve_workspace_path(workspace, args.session or settings.session)
+        if session_path.is_dir():
+            raise ValueError("session path must be a file")
+    except (OSError, ValueError, ValidationError) as exc:
+        parser.error(f"invalid TUI configuration: {exc}")
 
     return CliConfig(
         task="",
         workspace=workspace,
-        provider_id=args.provider_id,
-        model_id=args.model,
-        base_url=args.base_url,
-        api_key_env=args.api_key_env,
+        provider_id=settings.provider_id,
+        model_id=settings.model_id,
+        base_url=settings.base_url,
+        api_key_env=settings.api_key_env,
         system_prompt=args.system_prompt,
-        max_steps=args.max_steps,
+        max_steps=settings.max_steps,
         session_path=session_path,
-        context_window=args.context_window,
+        context_window=settings.context_window,
     )
 
 
@@ -97,10 +174,14 @@ def create_app(
         from textual.containers import Horizontal, Vertical
         from textual.events import Key
         from textual.message import Message
+        from textual.selection import Selection
         from textual.screen import ModalScreen
+        from textual.strip import Strip
         from textual.theme import Theme
         from textual.widgets import Button, Footer, Header, RichLog, Static, TextArea
         from rich.markdown import Markdown
+        from rich.table import Table
+        from rich.text import Text
     except ImportError as exc:
         raise RuntimeError(
             "The TUI requires Textual. Install project dependencies first."
@@ -124,6 +205,29 @@ def create_app(
                 self.insert("\n")
                 return
             await super()._on_key(event)
+
+    class SelectableLog(RichLog):
+        def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+            return selection.extract("\n".join(line.text for line in self.lines)), "\n"
+
+        def render_line(self, y: int) -> Strip:
+            line = super().render_line(y)
+            selection = self.screen.selections.get(self)
+            if selection is None:
+                return line
+            span = selection.get_span(y + self.scroll_offset.y)
+            if span is None:
+                return line
+            start, end = span
+            start = max(0, start - self.scroll_offset.x)
+            end = line.cell_length if end < 0 else max(start, end - self.scroll_offset.x)
+            return Strip.join((
+                line.crop(0, start),
+                line.crop(start, end).apply_style(
+                    self.screen.get_component_rich_style("screen--selection")
+                ),
+                line.crop(end),
+            ))
 
     class ApprovalScreen(ModalScreen):
         def __init__(
@@ -158,6 +262,23 @@ def create_app(
 
         def on_button_pressed(self, event: Button.Pressed) -> None:
             self.dismiss(event.button.id == "apply")
+
+    class WorkspaceTrustScreen(ModalScreen[bool]):
+        def compose(self) -> ComposeResult:
+            yield Vertical(
+                Static("Trust this workspace?", classes="modal-title"),
+                Static(str(config.workspace), classes="modal-copy"),
+                Static("The agent can read files and propose changes here.", classes="modal-copy"),
+                Horizontal(
+                    Button("Exit", id="decline"),
+                    Button("Trust workspace", id="trust", variant="success"),
+                    classes="modal-actions",
+                ),
+                id="trust-dialog",
+            )
+
+        def on_button_pressed(self, event: Button.Pressed) -> None:
+            self.dismiss(event.button.id == "trust")
 
     class HarnessApp(App[None]):
         TITLE = "Lario"
@@ -265,12 +386,6 @@ def create_app(
             background: transparent;
             scrollbar-color: $primary-darken-1;
         }
-        #live-response {
-            height: auto;
-            max-height: 10;
-            padding: 0 2;
-            overflow-y: auto;
-        }
         #composer {
             height: 6;
             padding: 0 2;
@@ -286,6 +401,13 @@ def create_app(
             height: 82%;
             padding: 2;
             background: transparent;
+            border: round $primary;
+        }
+        #trust-dialog {
+            width: 80%;
+            height: 17;
+            padding: 2;
+            background: $surface;
             border: round $primary;
         }
         .modal-title {
@@ -306,7 +428,6 @@ def create_app(
         }
         """
         BINDINGS = [
-            ("ctrl+c", "stop_run", "Stop"),
             ("ctrl+q", "quit", "Quit"),
         ]
 
@@ -339,9 +460,11 @@ def create_app(
             self.config = config
             self.provider = provider
             self.current_task: asyncio.Task[Any] | None = None
+            self._trusted = False
             self.show_steps = False
             self._log_entries: list[tuple[bool, Any]] = []
             self._live_text = ""
+            self._live_entry_index: int | None = None
 
         def compose(self) -> ComposeResult:
             yield Header()
@@ -380,8 +503,7 @@ def create_app(
                     ),
                     id="welcome",
                 ),
-                RichLog(id="log", highlight=True, markup=False),
-                Static("", id="live-response"),
+                SelectableLog(id="log", highlight=True, markup=False),
                 id="conversation",
             )
             yield Vertical(
@@ -394,11 +516,19 @@ def create_app(
             yield Footer()
 
         async def on_mount(self) -> None:
-            if self.provider is None:
-                self.provider = create_provider(self.config)
+            self.query_one("#welcome").display = False
             self.query_one("#log", RichLog).display = False
-            self.query_one("#live-response", Static).display = False
+            self.query_one("#composer").display = False
             self.query_one("#toggle-steps", Button).active_effect_duration = 0
+            self.push_screen(WorkspaceTrustScreen(), self._on_trust)
+
+        def _on_trust(self, trusted: bool | None) -> None:
+            if not trusted:
+                self.exit()
+                return
+            self._trusted = True
+            self.query_one("#welcome").display = True
+            self.query_one("#composer").display = True
             self.query_one("#task", TaskTextArea).focus()
 
         async def on_unmount(self) -> None:
@@ -413,30 +543,126 @@ def create_app(
         ) -> None:
             task_input = self.query_one("#task", TaskTextArea)
             task = event.text.strip()
-            if not task or self.current_task is not None:
+            if not self._trusted or not task or self.current_task is not None:
+                return
+            if task.startswith("/"):
+                task_input.clear()
+                self._handle_command(task)
+                return
+            if not self.config.model_id:
+                self._set_status("set /model before sending a task")
                 return
             task_input.clear()
             self.query_one("#welcome").display = False
             self.query_one("#log", RichLog).display = True
             self.current_task = asyncio.create_task(self._run(task))
 
+        def _handle_command(self, task: str) -> None:
+            command, _, value = task.partition(" ")
+            value = value.strip()
+            self.query_one("#welcome").display = False
+            self.query_one("#log", RichLog).display = True
+            if command == "/help":
+                self._write("/settings  /model ID  /provider ID  /base-url URL  "
+                            "/api-key-env NAME  /max-steps N  /context-window N|off  "
+                            "/session PATH")
+                return
+            if command == "/settings":
+                config = self.config
+                self._write(
+                    f"model: {config.model_id or '(unset)'}\n"
+                    f"provider: {config.provider_id}\n"
+                    f"base URL: {config.base_url}\n"
+                    f"API key env: {config.api_key_env} "
+                    f"({'set' if os.environ.get(config.api_key_env) else 'unset'})\n"
+                    f"max steps: {config.max_steps}\n"
+                    f"context window: {config.context_window or 'off'}\n"
+                    f"session: {_display_session_path(config)}"
+                )
+                return
+            if command == "/session":
+                if not value:
+                    self._write("Usage: /session WORKSPACE_RELATIVE_PATH")
+                    return
+                try:
+                    path = resolve_workspace_path(self.config.workspace, value)
+                    if path.is_dir():
+                        raise ValueError("session path must be a file")
+                    updated = replace(self.config, session_path=path)
+                    _save_settings(updated)
+                except (OSError, ValueError, ValidationError) as exc:
+                    self._write(f"Invalid /session: {exc}")
+                    return
+                self.config = updated
+                self._log_entries.clear()
+                self._refresh_log()
+                self.query_one("#log", RichLog).display = False
+                self.query_one("#welcome").display = True
+                self._set_status("ready")
+                return
+            field = {
+                "/model": "model_id",
+                "/provider": "provider_id",
+                "/base-url": "base_url",
+                "/api-key-env": "api_key_env",
+                "/max-steps": "max_steps",
+                "/context-window": "context_window",
+            }.get(command)
+            if field is None:
+                self._write(f"Unknown command: {command}. Use /help.")
+                return
+            if not value:
+                self._write(f"Usage: {command} VALUE")
+                return
+            try:
+                setting: str | int | None = value
+                if field in {"max_steps", "context_window"}:
+                    setting = None if field == "context_window" and value == "off" else int(value)
+                if field in {"provider_id", "model_id"} and any(c.isspace() for c in value):
+                    raise ValueError("value must not contain whitespace")
+                updated = replace(self.config, **{field: setting})
+                _save_settings(updated)
+            except (OSError, ValueError, ValidationError) as exc:
+                self._write(f"Invalid {command}: {exc}")
+                return
+            previous = self.config
+            self.config = updated
+            self._write(f"{command[1:]}: {value}")
+            if (field in {"model_id", "provider_id", "context_window"}
+                    and getattr(previous, field) != setting
+                    and updated.session_path.exists()):
+                self._write("An existing session may require its original model; "
+                            "use /session NEW_PATH for a new conversation.")
+
         async def _run(self, task: str) -> None:
             self._set_running(True)
             self._live_text = ""
-            self.query_one("#live-response", Static).display = False
-            self._write(f"> {task}")
+            self._live_entry_index = None
+            self._write(Text(
+                "❯ " + task.replace("\n", "\n  "),
+                style="#f4f4f4 on #303030",
+                justify="left",
+            ))
+            self._write("")
             output = StringIO()
 
             def on_event(event: AgentEvent) -> None:
                 if isinstance(event, ModelRequested):
                     self._live_text = ""
-                    self.query_one("#live-response", Static).display = False
+                    if self._live_entry_index is not None:
+                        del self._log_entries[self._live_entry_index]
+                        self._live_entry_index = None
+                        self._refresh_log()
                 if isinstance(event, ModelTextDelta):
                     self._live_text += event.text
-                    live = self.query_one("#live-response", Static)
-                    live.update(self._live_text)
-                    live.display = True
-                    live.scroll_end(animate=False)
+                    message = "⏺ " + self._live_text.replace("\n", "\n  ")
+                    if self._live_entry_index is None:
+                        self._live_entry_index = len(self._log_entries)
+                        self._write(message)
+                    else:
+                        self._log_entries[self._live_entry_index] = (False, message)
+                        # ponytail: Redraws history per chunk; use per-message widgets if long sessions lag.
+                        self._refresh_log()
                     return
                 is_step_event = isinstance(
                     event, (ModelRequested, ModelResponded, ToolStarted, ToolFinished)
@@ -447,16 +673,21 @@ def create_app(
                         self._write(f"command result:\n{event.result.content}")
                     return
                 if isinstance(event, RunFinished):
-                    self.query_one("#live-response", Static).display = False
-                    self._write("answer:")
-                    self._write(Markdown(assistant_text(event.final_message)))
+                    answer = Table.grid(padding=(0, 1))
+                    answer.add_row("⏺", Markdown(assistant_text(event.final_message)))
+                    if self._live_entry_index is None:
+                        self._write(answer)
+                    else:
+                        self._log_entries[self._live_entry_index] = (False, answer)
+                        self._live_entry_index = None
+                        self._refresh_log()
+                    self._write("")
                     return
                 self._write(render_event(event))
                 if isinstance(event, RunFailed):
                     if self._live_text:
-                        self.query_one("#live-response", Static).display = False
-                        self._write("partial answer (not saved):")
-                        self._write(self._live_text)
+                        self._live_entry_index = None
+                        self._write("partial answer (not saved)")
                     self._write(f"failed ({event.code}): {event.message}")
 
             async def approve(diff: str) -> bool:
@@ -465,11 +696,15 @@ def create_app(
             async def approve_command(argv: list[str], cwd: Path) -> bool:
                 return await self._ask_command_approval(argv, cwd)
 
+            provider = self.provider
             try:
+                if provider is None:
+                    provider = create_provider(self.config)
+                self.config.session_path.parent.mkdir(parents=True, exist_ok=True)
                 config = replace(self.config, task=task)
                 result = await run_task(
                     config,
-                    self.provider,
+                    provider,
                     output,
                     on_event=on_event,
                     approve=approve,
@@ -483,6 +718,8 @@ def create_app(
                 self._write(f"TUI error: {exc}")
                 self._set_status("TUI error")
             finally:
+                if self.provider is None and provider is not None:
+                    await close_provider(provider)
                 self.current_task = None
                 self._set_running(False)
 
@@ -518,6 +755,11 @@ def create_app(
                 self._set_status("stopping")
                 self.current_task.cancel()
 
+        def copy_to_clipboard(self, text: str) -> None:
+            super().copy_to_clipboard(text)
+            if platform.system() == "Darwin":
+                subprocess.run(["pbcopy"], input=text, text=True, check=False)
+
         def on_button_pressed(self, event: Button.Pressed) -> None:
             if event.button.id == "stop":
                 self.action_stop_run()
@@ -531,14 +773,16 @@ def create_app(
         def _write(self, message: Any, *, step: bool = False) -> None:
             self._log_entries.append((step, message))
             if not step or self.show_steps:
-                self.query_one("#log", RichLog).write(message)
+                self.query_one("#log", RichLog).write(
+                    message, expand=isinstance(message, Text)
+                )
 
         def _refresh_log(self) -> None:
             log = self.query_one("#log", RichLog)
             log.clear()
             for is_step, message in self._log_entries:
                 if self.show_steps or not is_step:
-                    log.write(message)
+                    log.write(message, expand=isinstance(message, Text))
 
         def _set_status(self, value: str) -> None:
             status = self.query_one("#status", Static)
