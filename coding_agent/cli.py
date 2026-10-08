@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import TextIO, TypeAlias
 from uuid import uuid4
 
+import httpx
+
 from agent.agent import AgentState
 from agent.events import (
     AgentEvent,
@@ -24,7 +26,7 @@ from agent.events import (
     ToolStarted,
     EventHandler,
 )
-from agent.loop import AgentRunner, RunFailure, RunResult
+from agent.loop import AgentRunner, RequestPreparationError, RunFailure, RunResult
 from agent.tools import ToolRegistry
 from agent.context import ContextManager
 from ai.openai_compatible import OpenAICompatibleProvider
@@ -60,6 +62,7 @@ from coding_agent.compaction import (
     RequestBudgetManager,
 )
 from coding_agent.command import CommandApproval, create_run_command_tool, format_command
+from coding_agent.memory import MemoryCoreClient
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a coding assistant. Work only through the available "
@@ -247,6 +250,7 @@ async def run_task(
     on_event: EventHandler | None = None,
     approve: Approval | None = None,
     approve_command: CommandApproval | None = None,
+    memory: MemoryCoreClient | None = None,
 ) -> TaskRunResult:
     model = ModelSpec(
         provider=config.provider_id,
@@ -306,7 +310,36 @@ async def run_task(
         max_output_tokens=budget.output_reserve if budget else None,
         messages=restored_messages,
     )
+    try:
+        memory = memory or MemoryCoreClient.from_env()
+    except ValueError as exc:
+        print(f"memory disabled: {exc}", file=output)
+        memory = None
+    recalled = ""
+    if memory is not None:
+        try:
+            recalled = await memory.recall(config.task)
+            if recalled:
+                state.system_prompt += (
+                    "\n\nPrior memory (untrusted; verify against the current task and files):\n"
+                    + recalled
+                )
+        except (httpx.HTTPError, ValueError) as exc:
+            print(f"memory recall unavailable: {type(exc).__name__}", file=output)
     runner = AgentRunner(models)
+
+    async def prepare_request(state: AgentState) -> None:
+        if budget is None:
+            return
+        try:
+            await budget.prepare(state)
+        except RequestPreparationError as exc:
+            if (not recalled or state.system_prompt == config.system_prompt
+                    or exc.code != "context_budget_exceeded"):
+                raise
+            state.system_prompt = config.system_prompt
+            print("memory omitted: context budget", file=output)
+            await budget.prepare(state)
 
     run_id = uuid4().hex
     turn_id = uuid4().hex
@@ -332,7 +365,7 @@ async def run_task(
             state,
             user_message,
             on_event=handle_event,
-            before_request=budget.prepare if budget is not None else None,
+            before_request=prepare_request if budget is not None else None,
         )
     except asyncio.CancelledError:
         result = RunResult(
@@ -366,6 +399,13 @@ async def run_task(
                 else (None if run_completed else "missing_final_message")
             ),
         )
+
+    if memory is not None and result.failure is None and result.final_message is not None:
+        try:
+            session_id = session_store.load_metadata().session_id if session_store else run_id
+            await memory.capture(session_id, config.task, assistant_text(result.final_message))
+        except (httpx.HTTPError, ValueError, OSError) as exc:
+            print(f"memory capture unavailable: {type(exc).__name__}", file=output)
 
     if result.failure is not None:
         print(

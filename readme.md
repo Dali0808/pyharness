@@ -53,6 +53,31 @@ and private. `/session another/path.jsonl` switches to or creates a separate
 workspace-relative session. Saved turns become model context on the next task;
 the TUI does not repaint old turns when opening a session.
 
+## Optional TencentDB memory
+
+With MemoryCore running, set these environment variables before launching
+`lario` (use the Team, Agent, and business User IDs from its panel):
+
+```sh
+export LARIO_MEMORY_URL=http://127.0.0.1:8420
+export LARIO_MEMORY_SERVICE_ID=default
+export LARIO_MEMORY_TEAM_ID=YOUR_TEAM_ID
+export LARIO_MEMORY_AGENT_ID=YOUR_AGENT_ID
+export LARIO_MEMORY_USER_ID=YOUR_USER_ID
+export LARIO_MEMORY_API_KEY=YOUR_GATEWAY_KEY
+```
+
+Set the gateway key in the environment only. The local deployment's gateway key
+is configured by `MEMORY_CORE_GATEWAY_API_KEY` (default `local`); it is distinct
+from the panel's user key. Memory is off when `LARIO_MEMORY_URL` is unset. When
+enabled, each task searches up to three L1 memories (at most 1200 characters
+in the request), then sends only the completed user turn and final answer to
+MemoryCore L0. JSONL remains the complete local history. Memory service errors
+do not stop the task. Set `/context-window` to account for memory in the request
+budget. Use a separate Team/Agent identity for each workspace whose memories
+must remain isolated. Turns longer than 8192 characters are kept in JSONL but
+not sent to MemoryCore.
+
 ## Streaming answers
 
 The TUI displays OpenAI-compatible chat completion text as it arrives. Tool calls

@@ -710,6 +710,9 @@ def create_app(
                     approve=approve,
                     approve_command=approve_command,
                 )
+                for line in output.getvalue().splitlines():
+                    if line.startswith("memory "):
+                        self._write(line)
                 if result.exit_code == 0:
                     self._set_status("ready")
                 else:

@@ -151,6 +151,33 @@ async def test_tui_uses_slash_model_for_next_task(tmp_path: Path) -> None:
     assert snapshot.metadata.model.id == "test-model"
 
 
+@pytest.mark.asyncio
+async def test_tui_shows_memory_configuration_error(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("LARIO_MEMORY_URL", "http://127.0.0.1:8420")
+    for name in ("LARIO_MEMORY_SERVICE_ID", "LARIO_MEMORY_TEAM_ID",
+                 "LARIO_MEMORY_AGENT_ID", "LARIO_MEMORY_USER_ID",
+                 "LARIO_MEMORY_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    provider = ScriptedProvider([ChatResponse(
+        message=AssistantMessage(content=[TextPart(text="Done")]),
+        finish_reason="stop",
+    )])
+    app = create_app(parse_tui_args([
+        "--workspace", str(tmp_path), "--provider-id", "scripted",
+        "--model", "test-model",
+    ]), provider=provider)
+
+    async with app.run_test() as pilot:
+        await pilot.click("#trust")
+        await pilot.pause()
+        app.query_one("#task").load_text("hello")
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        visible = "\n".join(log_text(line) for line in app.query_one("#log").lines)
+        assert "memory disabled: missing" in visible
+        assert "⏺ Done" in visible
+
+
 class BlockingProvider:
     id = "scripted"
 
