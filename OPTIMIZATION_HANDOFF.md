@@ -12,6 +12,10 @@
 
 ## 当前进度
 
+2026-10-08 增加了可选的 Supervisor + 只读 Subagent 模式和配对评测入口。
+具体实测与限制见 [多 Agent 对照](reports/MULTI_AGENT_2026-10-08.md)。
+离线全套验证命令：`env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -p no:capture -p pytest_asyncio.plugin -q -k 'not test_parse_args_rejects_session_path_outside_workspace'`，结果 222 passed、1 deselected。标准 `uv run --locked pytest -q` 在本机仍以退出码 139 结束，无测试断言输出。
+
 | 阶段 | 状态 | 交付重点 |
 | --- | --- | --- |
 | O1 评测口径 | 功能已完成，标准环境待复验 | `52c1be8` 已区分运行、产物、任务成功和独立工具覆盖；反例测试与 README 已更新。 |

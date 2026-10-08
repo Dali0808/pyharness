@@ -1,0 +1,63 @@
+{
+  "evaluated_at": "2026-10-08T08:00:07.245954+00:00",
+  "model": "openai/deepseek-chat",
+  "max_steps": 10,
+  "context_window": null,
+  "cases": 3,
+  "single": {
+    "passed": 3,
+    "success_rate": 1.0,
+    "total_tokens": 22066,
+    "total_cost": null,
+    "cost_per_success": null,
+    "median_elapsed_seconds": 5.242033791999347,
+    "subtasks": 0
+  },
+  "multi": {
+    "passed": 3,
+    "success_rate": 1.0,
+    "total_tokens": 39191,
+    "total_cost": null,
+    "cost_per_success": null,
+    "median_elapsed_seconds": 8.821826957999292,
+    "subtasks": 3
+  },
+  "single_only_successes": 0,
+  "multi_only_successes": 0,
+  "ties": 3,
+  "paired_results": [
+    {
+      "case_id": "research-api-routes",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 8878,
+      "multi_tokens": 12992,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 5.553420000000187,
+      "multi_elapsed_seconds": 8.821826957999292
+    },
+    {
+      "case_id": "research-configuration",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 5523,
+      "multi_tokens": 11160,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 3.381975083000725,
+      "multi_elapsed_seconds": 7.201965291000306
+    },
+    {
+      "case_id": "research-permissions",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 7665,
+      "multi_tokens": 15039,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 5.242033791999347,
+      "multi_elapsed_seconds": 10.042159541999354
+    }
+  ]
+}

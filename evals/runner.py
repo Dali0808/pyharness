@@ -9,7 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TypeAlias
 
-from agent.events import AgentEvent, ToolFinished, ToolStarted
+from agent.events import AgentEvent, SubtaskStarted, ToolFinished, ToolStarted
 from ai.provider import LLMProvider
 from ai.schemas import ToolResultMessage
 from coding_agent.cli import (
@@ -32,6 +32,7 @@ class EvalRunResult:
     final_files: Mapping[str, str]
     tool_errors: tuple[ToolResultMessage, ...]
     tool_call_names: tuple[str, ...] = ()
+    subtask_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +47,7 @@ class EvalRunnerConfig:
     )
     max_steps: int = 10
     context_window: int | None = None
+    multi_agent: bool = False
 
 
 class EvalRunner:
@@ -80,14 +82,19 @@ class EvalRunner:
                 max_steps=self._config.max_steps,
                 session_path=None,
                 context_window=self._config.context_window,
+                multi_agent=self._config.multi_agent,
             )
 
             provider = provider_factory(config)
             tool_errors: list[ToolResultMessage] = []
             tool_call_names: list[str] = []
+            subtask_count = 0
             started_at = time.perf_counter()
 
             def collect_event(event: AgentEvent) -> None:
+                nonlocal subtask_count
+                if isinstance(event, SubtaskStarted):
+                    subtask_count += 1
                 if isinstance(event, ToolStarted):
                     tool_call_names.append(event.call.name)
                 if (
@@ -118,6 +125,7 @@ class EvalRunner:
                 final_files=final_files,
                 tool_errors=tuple(tool_errors),
                 tool_call_names=tuple(tool_call_names),
+                subtask_count=subtask_count,
             )
 
     @staticmethod

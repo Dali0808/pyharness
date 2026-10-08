@@ -1,0 +1,250 @@
+{
+  "evaluated_at": "2026-10-08T08:02:35.361955+00:00",
+  "model": "openai/deepseek-chat",
+  "max_steps": 10,
+  "context_window": null,
+  "cases": 20,
+  "single": {
+    "passed": 17,
+    "success_rate": 0.85,
+    "total_tokens": 73387,
+    "total_cost": null,
+    "cost_per_success": null,
+    "median_elapsed_seconds": 2.557644978999633,
+    "subtasks": 0
+  },
+  "multi": {
+    "passed": 16,
+    "success_rate": 0.8,
+    "total_tokens": 76085,
+    "total_cost": null,
+    "cost_per_success": null,
+    "median_elapsed_seconds": 2.5351937294999516,
+    "subtasks": 0
+  },
+  "single_only_successes": 1,
+  "multi_only_successes": 0,
+  "ties": 19,
+  "paired_results": [
+    {
+      "case_id": "workspace-read-file",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 3536,
+      "multi_tokens": 3885,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.5516053329993156,
+      "multi_elapsed_seconds": 2.1336702079988754
+    },
+    {
+      "case_id": "workspace-write-file",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 2284,
+      "multi_tokens": 2523,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 1.374127375000171,
+      "multi_elapsed_seconds": 1.7033862919997773
+    },
+    {
+      "case_id": "workspace-list-dir",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 3536,
+      "multi_tokens": 3897,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 3.025014458999067,
+      "multi_elapsed_seconds": 2.652667083999404
+    },
+    {
+      "case_id": "workspace-read-then-write",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 3558,
+      "multi_tokens": 3912,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.8434274999999616,
+      "multi_elapsed_seconds": 2.103204041000936
+    },
+    {
+      "case_id": "workspace-tool-error-recovery",
+      "single_success": true,
+      "multi_success": false,
+      "single_tokens": 3922,
+      "multi_tokens": 3964,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.8134765830000106,
+      "multi_elapsed_seconds": 3.2722628339997755
+    },
+    {
+      "case_id": "copy-single-line-file",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 3519,
+      "multi_tokens": 3859,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.5429537920008443,
+      "multi_elapsed_seconds": 2.803791500000443
+    },
+    {
+      "case_id": "copy-multiline-file",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 3544,
+      "multi_tokens": 3910,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.123297125001045,
+      "multi_elapsed_seconds": 2.9726550829982443
+    },
+    {
+      "case_id": "copy-unicode-file",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 3529,
+      "multi_tokens": 3895,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.5636846249999508,
+      "multi_elapsed_seconds": 2.531895000000077
+    },
+    {
+      "case_id": "copy-empty-file",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 3525,
+      "multi_tokens": 3891,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.1365055840014975,
+      "multi_elapsed_seconds": 2.556905374998678
+    },
+    {
+      "case_id": "overwrite-existing-file",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 4798,
+      "multi_tokens": 2497,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 3.4381977089997235,
+      "multi_elapsed_seconds": 2.5299262919998
+    },
+    {
+      "case_id": "create-multiline-file",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 2339,
+      "multi_tokens": 2583,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 1.8186280829995667,
+      "multi_elapsed_seconds": 2.3056367079989286
+    },
+    {
+      "case_id": "copy-nested-file",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 3556,
+      "multi_tokens": 3916,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.171243250000771,
+      "multi_elapsed_seconds": 2.476944416999686
+    },
+    {
+      "case_id": "combine-two-files",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 3621,
+      "multi_tokens": 3988,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.6737585829996533,
+      "multi_elapsed_seconds": 2.3929627500001516
+    },
+    {
+      "case_id": "combine-files-with-separator",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 3613,
+      "multi_tokens": 3979,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.242162583001118,
+      "multi_elapsed_seconds": 2.7030912499994884
+    },
+    {
+      "case_id": "copy-config-backup",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 3547,
+      "multi_tokens": 3909,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.7753864170008455,
+      "multi_elapsed_seconds": 2.772226041999602
+    },
+    {
+      "case_id": "list-root-entries",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 3544,
+      "multi_tokens": 3899,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.492347667001013,
+      "multi_elapsed_seconds": 2.144070833001024
+    },
+    {
+      "case_id": "list-nested-entries",
+      "single_success": false,
+      "multi_success": false,
+      "single_tokens": 3542,
+      "multi_tokens": 3908,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 3.1123504579991277,
+      "multi_elapsed_seconds": 2.263684249999642
+    },
+    {
+      "case_id": "list-directory-with-child",
+      "single_success": false,
+      "multi_success": false,
+      "single_tokens": 3587,
+      "multi_tokens": 5412,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.9621040410002024,
+      "multi_elapsed_seconds": 3.6432075419998
+    },
+    {
+      "case_id": "list-document-entries",
+      "single_success": false,
+      "multi_success": false,
+      "single_tokens": 3572,
+      "multi_tokens": 3933,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 2.1392069590001483,
+      "multi_elapsed_seconds": 2.5384924589998263
+    },
+    {
+      "case_id": "tool-error-recovery-missing-file",
+      "single_success": true,
+      "multi_success": true,
+      "single_tokens": 6715,
+      "multi_tokens": 4325,
+      "single_cost": null,
+      "multi_cost": null,
+      "single_elapsed_seconds": 4.393810999999914,
+      "multi_elapsed_seconds": 2.8741909580003266
+    }
+  ]
+}

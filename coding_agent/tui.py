@@ -23,6 +23,8 @@ from agent.events import (
     RunFinished,
     ToolFinished,
     ToolStarted,
+    SubtaskStarted,
+    SubtaskFinished,
 )
 from coding_agent.builtins import resolve_workspace_path
 from coding_agent.command import format_command
@@ -47,6 +49,7 @@ class TuiSettings(BaseModel):
     max_steps: int = Field(default=10, gt=0)
     context_window: int | None = Field(default=None, gt=0)
     session: str = Field(default=".runtime/session.jsonl", min_length=1)
+    multi_agent: bool = False
 
     @field_validator("base_url")
     @classmethod
@@ -116,6 +119,7 @@ def parse_tui_args(argv: Sequence[str] | None = None) -> CliConfig:
         default=DEFAULT_SYSTEM_PROMPT,
     )
     parser.add_argument("--max-steps", type=_positive_int)
+    parser.add_argument("--multi-agent", action="store_true")
     args = parser.parse_args(argv)
 
     workspace = Path(args.workspace).resolve(strict=False)
@@ -130,6 +134,8 @@ def parse_tui_args(argv: Sequence[str] | None = None) -> CliConfig:
             if override is not None:
                 values[field] = override
         settings = TuiSettings.model_validate(values)
+        if args.multi_agent:
+            settings.multi_agent = True
         session_path = resolve_workspace_path(workspace, args.session or settings.session)
         if session_path.is_dir():
             raise ValueError("session path must be a file")
@@ -147,6 +153,7 @@ def parse_tui_args(argv: Sequence[str] | None = None) -> CliConfig:
         max_steps=settings.max_steps,
         session_path=session_path,
         context_window=settings.context_window,
+        multi_agent=settings.multi_agent,
     )
 
 
@@ -565,7 +572,7 @@ def create_app(
             if command == "/help":
                 self._write("/settings  /model ID  /provider ID  /base-url URL  "
                             "/api-key-env NAME  /max-steps N  /context-window N|off  "
-                            "/session PATH")
+                            "/multi-agent on|off  /session PATH")
                 return
             if command == "/settings":
                 config = self.config
@@ -577,6 +584,7 @@ def create_app(
                     f"({'set' if os.environ.get(config.api_key_env) else 'unset'})\n"
                     f"max steps: {config.max_steps}\n"
                     f"context window: {config.context_window or 'off'}\n"
+                    f"multi-agent: {'on' if config.multi_agent else 'off'}\n"
                     f"session: {_display_session_path(config)}"
                 )
                 return
@@ -607,6 +615,7 @@ def create_app(
                 "/api-key-env": "api_key_env",
                 "/max-steps": "max_steps",
                 "/context-window": "context_window",
+                "/multi-agent": "multi_agent",
             }.get(command)
             if field is None:
                 self._write(f"Unknown command: {command}. Use /help.")
@@ -618,6 +627,10 @@ def create_app(
                 setting: str | int | None = value
                 if field in {"max_steps", "context_window"}:
                     setting = None if field == "context_window" and value == "off" else int(value)
+                if field == "multi_agent":
+                    if value not in {"on", "off"}:
+                        raise ValueError("use on or off")
+                    setting = value == "on"
                 if field in {"provider_id", "model_id"} and any(c.isspace() for c in value):
                     raise ValueError("value must not contain whitespace")
                 updated = replace(self.config, **{field: setting})
@@ -628,7 +641,7 @@ def create_app(
             previous = self.config
             self.config = updated
             self._write(f"{command[1:]}: {value}")
-            if (field in {"model_id", "provider_id", "context_window"}
+            if (field in {"model_id", "provider_id", "context_window", "multi_agent"}
                     and getattr(previous, field) != setting
                     and updated.session_path.exists()):
                 self._write("An existing session may require its original model; "
@@ -665,7 +678,8 @@ def create_app(
                         self._refresh_log()
                     return
                 is_step_event = isinstance(
-                    event, (ModelRequested, ModelResponded, ToolStarted, ToolFinished)
+                    event, (ModelRequested, ModelResponded, ToolStarted, ToolFinished,
+                            SubtaskStarted, SubtaskFinished)
                 )
                 if is_step_event:
                     self._write(render_event(event), step=True)

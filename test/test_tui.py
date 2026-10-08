@@ -82,6 +82,7 @@ async def test_tui_slash_settings_persist_without_running_model(tmp_path: Path, 
             "/api-key-env DEEPSEEK_API_KEY",
             "/max-steps 30",
             "/context-window 8192",
+            "/multi-agent on",
         ):
             task.load_text(command)
             await pilot.press("enter")
@@ -99,6 +100,7 @@ async def test_tui_slash_settings_persist_without_running_model(tmp_path: Path, 
         task.load_text("/api-key-env INVALID-NAME")
         await pilot.press("enter")
         assert app.config.api_key_env == "DEEPSEEK_API_KEY"
+        assert app.config.multi_agent is True
         task.load_text("/settings")
         await pilot.press("enter")
         assert any("deepseek-chat" in log_text(line) for line in app.query_one("#log").lines)
@@ -118,6 +120,7 @@ async def test_tui_slash_settings_persist_without_running_model(tmp_path: Path, 
     assert restored.api_key_env == "DEEPSEEK_API_KEY"
     assert restored.max_steps == 30
     assert restored.context_window == 8192
+    assert restored.multi_agent is True
     assert restored.session_path == tmp_path / ".runtime" / "new.jsonl"
     assert "not-a-real-secret" not in (tmp_path / ".runtime" / "lario.json").read_text()
     assert not provider.requests

@@ -26,6 +26,7 @@ class SessionMetadata(_SessionSchema):
     workspace: str
     system_prompt: str
     model: ModelSpec
+    multi_agent: bool = False
 
 
 class SessionRun(_SessionSchema):
@@ -95,6 +96,7 @@ def validate_session_metadata(
     workspace: Path,
     model: ModelSpec,
     system_prompt: str,
+    multi_agent: bool = False,
 ) -> None:
     mismatches: list[str] = []
     if Path(saved.workspace).resolve(strict=False) != workspace.resolve(strict=False):
@@ -103,6 +105,8 @@ def validate_session_metadata(
         mismatches.append("model")
     if saved.system_prompt != system_prompt:
         mismatches.append("system prompt")
+    if saved.multi_agent != multi_agent:
+        mismatches.append("multi-agent mode")
     if mismatches:
         raise SessionCompatibilityError(
             "session configuration differs in "

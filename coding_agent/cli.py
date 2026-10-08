@@ -3,10 +3,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import inspect
+import json
 import os
 import sys
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TextIO, TypeAlias
 from uuid import uuid4
@@ -14,6 +15,7 @@ from uuid import uuid4
 import httpx
 
 from agent.agent import AgentState
+from agent.coordination import create_delegate_tool
 from agent.events import (
     AgentEvent,
     ModelRequested,
@@ -24,6 +26,8 @@ from agent.events import (
     RunStarted,
     ToolFinished,
     ToolStarted,
+    SubtaskStarted,
+    SubtaskFinished,
     EventHandler,
 )
 from agent.loop import AgentRunner, RequestPreparationError, RunFailure, RunResult
@@ -81,6 +85,7 @@ class CliConfig:
     max_steps: int
     session_path: Path | None = None
     context_window: int | None = None
+    multi_agent: bool = False
 
 @dataclass(frozen=True, slots=True)
 class TaskRunResult:
@@ -148,6 +153,10 @@ def parse_args(argv: Sequence[str] | None = None) -> CliConfig:
         default=10,
         help="Maximum number of model calls.",
     )
+    parser.add_argument(
+        "--multi-agent", action="store_true",
+        help="Allow bounded read-only subagent investigations.",
+    )
 
     arguments = parser.parse_args(argv)
     workspace = Path(arguments.workspace).resolve(strict=False)
@@ -177,6 +186,7 @@ def parse_args(argv: Sequence[str] | None = None) -> CliConfig:
         max_steps=arguments.max_steps,
         session_path=session_path,
         context_window=arguments.context_window,
+        multi_agent=arguments.multi_agent,
     )
 
 
@@ -203,6 +213,7 @@ def prepare_session(
             workspace=config.workspace,
             model=model,
             system_prompt=config.system_prompt,
+            multi_agent=config.multi_agent,
         )
         snapshot = store.recover()
         return store, list(snapshot.messages)
@@ -213,6 +224,7 @@ def prepare_session(
         workspace=str(config.workspace),
         system_prompt=config.system_prompt,
         model=model,
+        multi_agent=config.multi_agent,
     )
     store.create(metadata)
 
@@ -301,8 +313,14 @@ async def run_task(
             on_compaction=report_compaction,
         )
 
+    base_system_prompt = config.system_prompt + (
+        " For tasks requiring inspection of several files, delegate one "
+        "focused read-only investigation before editing. Handle simple "
+        "tasks directly."
+        if config.multi_agent else ""
+    )
     state = AgentState(
-        system_prompt=config.system_prompt,
+        system_prompt=base_system_prompt,
         model=model,
         tools=tools,
         context_manager=budget or ContextManager(),
@@ -327,19 +345,94 @@ async def run_task(
         except (httpx.HTTPError, ValueError) as exc:
             print(f"memory recall unavailable: {type(exc).__name__}", file=output)
     runner = AgentRunner(models)
+    child_steps = 0
+    child_usage = Usage()
+    requests_used = 0
+
+    if config.multi_agent:
+        def save_child_history(task_id: str, messages: list[Message]) -> None:
+            if session_store is None:
+                return
+            sibling = session_store.path.with_name(session_store.path.name + ".subtasks.jsonl")
+            resolve_workspace_path(
+                config.workspace, str(sibling.relative_to(config.workspace))
+            )
+            if sibling.is_symlink():
+                raise ValueError("subtask history path must not be a symlink")
+            descriptor = os.open(
+                sibling, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600
+            )
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                for message in messages:
+                    stream.write(json.dumps({
+                        "task_id": task_id,
+                        "message": message.model_dump(mode="json"),
+                    }, ensure_ascii=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+
+        def make_child_state() -> AgentState:
+            child_tools = ToolRegistry()
+            child_tools.register(create_read_file_tool(config.workspace))
+            child_tools.register(create_list_dir_tool(config.workspace))
+            child_tools.register(create_glob_file_tool(config.workspace))
+            child_tools.register(create_grep_file_tool(config.workspace))
+            child_budget = (
+                RequestBudgetManager(
+                    context_window=model.context_window,
+                    summarizer=ModelSummaryGenerator(
+                        models, model,
+                        max_tokens=max(32, min(512, model.context_window // 8)),
+                    ),
+                ) if model.context_window is not None else None
+            )
+            return AgentState(
+                system_prompt=(
+                    "You are a read-only coding investigator. Inspect the workspace "
+                    "and return concise findings with file paths. Do not propose "
+                    "unverified facts."
+                ),
+                model=model,
+                tools=child_tools,
+                context_manager=child_budget or ContextManager(),
+                max_steps=min(4, config.max_steps),
+                max_output_tokens=child_budget.output_reserve if child_budget else None,
+            )
+
+        def record_child(steps: int, usage: Usage) -> None:
+            nonlocal child_steps, child_usage
+            child_steps += steps
+            child_usage = AgentRunner._add_usage(child_usage, usage)
+
+        tools.register(create_delegate_tool(
+            runner, make_child_state,
+            before_request=lambda state: prepare_request(state),
+            on_event=lambda event: handle_event(event),
+            on_usage=record_child,
+            on_history=save_child_history,
+        ))
 
     async def prepare_request(state: AgentState) -> None:
-        if budget is None:
+        nonlocal requests_used
+        if config.multi_agent and requests_used >= config.max_steps:
+            raise RequestPreparationError(
+                "max_steps_exceeded", "Combined model request limit reached."
+            )
+        active_budget = state.context_manager
+        if not isinstance(active_budget, RequestBudgetManager):
+            requests_used += 1
             return
         try:
-            await budget.prepare(state)
+            await active_budget.prepare(state)
         except RequestPreparationError as exc:
-            if (not recalled or state.system_prompt == config.system_prompt
+            if (not recalled or state.system_prompt == base_system_prompt
                     or exc.code != "context_budget_exceeded"):
                 raise
-            state.system_prompt = config.system_prompt
+            state.system_prompt = base_system_prompt
             print("memory omitted: context budget", file=output)
-            await budget.prepare(state)
+            await active_budget.prepare(state)
+        requests_used += 1
 
     run_id = uuid4().hex
     turn_id = uuid4().hex
@@ -365,7 +458,7 @@ async def run_task(
             state,
             user_message,
             on_event=handle_event,
-            before_request=prepare_request if budget is not None else None,
+            before_request=prepare_request if budget is not None or config.multi_agent else None,
         )
     except asyncio.CancelledError:
         result = RunResult(
@@ -382,6 +475,13 @@ async def run_task(
             message=result.failure.message,
             steps=0,
         ))
+
+    if config.multi_agent:
+        result = replace(
+            result,
+            steps=result.steps + child_steps,
+            usage=AgentRunner._add_usage(result.usage, child_usage),
+        )
 
     if session_store is not None:
         run_completed = result.failure is None and result.final_message is not None
@@ -516,6 +616,12 @@ def _cli_command_approval(argv: list[str], cwd: Path, output: TextIO) -> bool:
 
 
 def render_event(event: AgentEvent) -> str:
+    if isinstance(event, SubtaskStarted):
+        return f"subtask {event.task_id[:8]} started: {event.task}"
+
+    if isinstance(event, SubtaskFinished):
+        status = event.failure_code or "completed"
+        return f"subtask {event.task_id[:8]} {status} after {event.steps} step(s)"
     if isinstance(event, RunStarted):
         return "run started"
 

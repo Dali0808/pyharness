@@ -10,6 +10,7 @@ from ai.schemas import (
     ChatResponse,
     ToolCallPart,
     ToolResultMessage,
+    Usage,
 )
 
 FailureCode: TypeAlias = Literal[
@@ -71,6 +72,20 @@ class RunFailed:
     steps: int
 
 
+@dataclass(frozen=True, slots=True)
+class SubtaskStarted:
+    task_id: str
+    task: str
+
+
+@dataclass(frozen=True, slots=True)
+class SubtaskFinished:
+    task_id: str
+    failure_code: str | None
+    steps: int
+    usage: Usage
+
+
 AgentEvent: TypeAlias = (
     RunStarted
     | ModelRequested
@@ -80,6 +95,8 @@ AgentEvent: TypeAlias = (
     | ToolFinished
     | RunFinished
     | RunFailed
+    | SubtaskStarted
+    | SubtaskFinished
 )
 
 EventHandler: TypeAlias = Callable[[AgentEvent], None]

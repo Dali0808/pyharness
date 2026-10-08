@@ -46,6 +46,38 @@ end the agent run.
 Drag to select conversation text and press Ctrl+C (or Command+C) to copy it.
 Use the Stop button to interrupt a running task.
 
+## Read-only subagents
+
+Start the CLI with `--multi-agent`, or enter `/multi-agent on` in the TUI.
+The supervisor can call `delegate_task` for a short investigation. A subagent
+has its own conversation and can only read, list, glob, and search workspace
+files. It cannot edit files, run commands, or delegate again. Each subtask has
+at most four model steps; parent and child requests share `--max-steps`.
+The parent's saved conversation contains the delegated result. When a session
+is enabled, complete subtask messages are saved separately in
+`<session>.subtasks.jsonl` with mode `0600`. Sessions cannot switch between
+single and multi-agent mode on resume. A subtask error is returned as a tool
+error for the supervisor to handle.
+
+Compare both modes on fresh temporary workspaces with the same deterministic
+case catalog:
+
+```sh
+uv run --locked python -m evals.compare \
+  --model deepseek-chat --base-url https://api.deepseek.com/v1 \
+  --api-key-env DEEPSEEK_API_KEY --max-steps 10 \
+  --output reports/multi-agent-comparison.json
+```
+
+The report includes paired task outcomes, total parent-and-child tokens,
+median elapsed time, and delegation count. Add `--input-price`,
+`--cached-input-price`, and `--output-price` together to estimate USD cost per
+million tokens at a verified price. The catalog verifies small file operations;
+it does not measure real repository coding success. Compare real coding tasks
+separately using fixed Git snapshots and hidden acceptance checks. Use
+`--case-set research` for three cross-file investigation cases; inspect
+`subtasks` to see whether the model actually delegated.
+
 The default session is `.runtime/session.jsonl` inside the workspace. Relaunch
 `lario` to resume it; keep the workspace, model settings, and system prompt
 unchanged. Sessions can contain source code and tool output, so keep them local
