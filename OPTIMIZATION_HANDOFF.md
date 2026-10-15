@@ -1,6 +1,6 @@
 # pyharness 优化开发交接
 
-> 更新于 2026-10-02，O5 的流式文本、有限重试和沙箱终端工具已开发并完成用户验收。长期约束见 [AGENTS.md](AGENTS.md)；本文件只记录进度、取舍与阶段验收。开始新阶段前以当前代码为准。
+> 更新于 2026-10-15，Docker 命令沙箱已实现，并完成用户异机基础验收。长期约束见 [AGENTS.md](AGENTS.md)；本文件只记录进度、取舍与阶段验收。开始新阶段前以当前代码为准。
 
 ## 目标与取舍
 
@@ -11,6 +11,32 @@
 保留六个阶段用于记录进度，但把“先做真实任务，再完善体验”作为顺序。每阶段只实现必需能力，验证一条成功路径和关键失败路径；影响数据或权限的边界仍按 `AGENTS.md` 处理。
 
 ## 当前进度
+
+2026-10-15 提交前复核与用户异机验收（尚未提交）：
+
+- 本机 Windows：`uv run --locked pytest -q test/test_command.py test/test_cli.py test/test_tui.py`，59 passed、3 skipped。
+- 本机 Windows 全套：`uv run --locked pytest -q`，231 passed、6 skipped、3 failed。失败仍为 grep 路径分隔符、子任务历史使用 POSIX API、创建符号链接缺少权限；相关业务代码与测试本次均未修改，Windows 全套尚未通过。
+- 本机 Ubuntu 24.04 WSL 全套：`UV_PROJECT_ENVIRONMENT=/var/tmp/pyharness-docker-tests-20261013/project /var/tmp/pyharness-docker-tests-20261013/bin/uv run --locked --directory /mnt/c/Users/zdl/Documents/lessons/pyharness pytest -q`，239 passed、1 skipped（真实 Docker 集成测试）。
+- 用户另一台 Windows 电脑：Docker Desktop 4.95.0、Engine 29.8.2、`desktop-linux` / `linux/amd64`，用户确认已构建沙箱镜像。设置 `LARIO_TEST_DOCKER=1` 后运行 `uv run --locked pytest -q test/test_command.py -k real_docker`，用户报告 1 passed，覆盖非 root、文件副本隔离、只读输入/根文件系统、禁网和实际退出码。
+- 用户提供的 Lario 工具轨迹：通过 `run_command` 执行 Python 身份与目录检查，返回 `sandbox-ok`、UID 65534、`/workspace` 和退出码 0；随后执行 `python -m pytest -q test/test_command.py`，返回 25 passed、1 skipped、退出码 0。沙箱内未传入 `LARIO_TEST_DOCKER`，因此真实 Docker 集成项跳过。以上异机结果由用户提供，未在本机重复执行真实容器或真实模型调用；模型、参数和成本未提供。
+- 代表性链路：快照测试通过 `ToolRegistry.execute()` 检查参数、排除项、只读挂载和容器限制；取消测试覆盖 create/start 两阶段清理；TUI 测试覆盖命令审批和退出码显示；用户异机轨迹补充实际模型到容器执行及输出展示。以上为基础功能验收，不代表真实编码任务成功率。
+
+2026-10-13 将 `run_command` 从 macOS `sandbox-exec` 迁移到 Linux Docker
+沙箱。采用用户确认的工作区副本方案：主机快照只读挂载，容器内 tmpfs
+副本可写，命令修改与产物不回写；原有文件工具的 diff 审批仍作用于主机。
+保留命令审批、路径校验、30 秒超时、32 KB 输出和未知结果不重放，新增
+非 root、禁网、只读根文件系统、CPU/内存/进程数与 tmpfs 上限。超时或取消
+时删除实际容器，缺少 Docker/镜像时拒绝执行。镜像构建与运行前提见 README。
+本次验证（2026-10-13，未提交）：
+
+- Windows Python 3.11：`uv run --locked pytest -q test/test_command.py test/test_cli.py test/test_tui.py`，59 passed、3 skipped。跳过项为 Windows 无符号链接创建权限、Linux 容器启动脚本的 exec 行为和显式 Docker 集成测试。
+- Ubuntu 24.04 WSL / Python 3.12 干净环境：`UV_PROJECT_ENVIRONMENT=/var/tmp/pyharness-docker-tests-20261013/project /var/tmp/pyharness-docker-tests-20261013/bin/uv run --locked --directory /mnt/c/Users/zdl/Documents/lessons/pyharness pytest -q`，239 passed、1 skipped（真实 Docker 集成测试）。
+- Windows 首次全套 `uv run --locked pytest -q` 为 228 passed、5 skipped、4 failed；三个 Windows 旧兼容性问题在 `git archive HEAD` 的独立干净副本中复现（grep 路径分隔符、子任务历史 POSIX API、符号链接创建权限）。另一个 TUI 步骤日志测试的时序失败，单独重跑通过；Linux 全套通过。未修改这些业务模块来掩盖 Windows 基线问题。
+- 代表性测试链路：`test_command_uses_isolated_snapshot_and_literal_arguments` 经 `ToolRegistry.execute()` 验证审批、快照排除、容器配置和 argv；取消测试验证 create/start 两阶段均按同一容器名清理；`test_command_returns_container_exit_code` 验证 CLI 状态与容器实际退出码分离；TUI 测试从审批界面到可见日志核对输出。
+
+截至 2026-10-13，本机 Windows 与 WSL 均未安装 Docker；当时镜像构建、
+真实容器隔离和真实模型端到端验收未运行。后续异机基础验收见上述
+2026-10-15 记录，不沿用历史 macOS 验收记录。
 
 2026-10-08 增加了可选的 Supervisor + 只读 Subagent 模式和配对评测入口。
 具体实测与限制见 [多 Agent 对照](reports/MULTI_AGENT_2026-10-08.md)。

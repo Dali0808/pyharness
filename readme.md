@@ -124,18 +124,83 @@ errors. Requests do not retry after any streamed text has been shown.
 ## Verification commands
 
 The agent can propose one existing project check with `run_command` (an argument
-list and workspace-relative working directory). The TUI shows the complete
-command and resolved directory for approval. An approved command runs through
-macOS `sandbox-exec` with workspace-scoped writes, no network access, a 30-second
-limit, and a 32 KB output limit. Rejected commands and systems without
-`sandbox-exec` do not execute. Stopping the run terminates the command process
-group. The tool does not automatically rerun commands with unknown outcomes.
-This feature requires macOS; `sandbox-exec` is deprecated by Apple.
-The sandbox allows reads in the workspace, system directories, and the approved
-executable's runtime; writes are limited to the workspace. `/dev/null` is
-available for tools such as pytest. There is no CPU, memory, or disk quota, and
-an approved command can still change workspace files. Command execution fails
-closed when the sandbox is unavailable.
+list and workspace-relative working directory). Commands now use a **Linux
+Docker sandbox with a disposable project copy**. The harness and TUI continue
+running on the host. File edits through `write_file` and `edit_file` still apply
+to the host workspace through the existing diff approval flow.
+
+Install and start Docker Engine on Linux, or Docker Desktop in Linux-container
+mode on Windows/macOS. Use a trusted local Docker daemon. Build the default
+image once, from the pyharness checkout (the build downloads dependencies):
+
+```sh
+docker build -f docker/sandbox.Dockerfile -t pyharness-sandbox:latest .
+```
+
+The image includes Python 3.11 and this repository's locked runtime and test
+dependencies. For another project's dependencies, build a trusted image derived
+from this image and install them during the build, then set
+`LARIO_SANDBOX_IMAGE` before launching Lario. Custom images must provide a
+`python` executable and should not declare extra writable volumes. For example,
+on PowerShell:
+
+```powershell
+$env:LARIO_SANDBOX_IMAGE = "my-project-sandbox:latest"
+lario
+```
+
+Use commands installed in the container, such as `python -m pytest` when the
+user requests tests. Host executable paths and host virtual environments are
+not reused; installing dependencies during a command will fail without network
+access. Images are never pulled automatically during execution. A missing CLI,
+daemon or image causes a tool error, with no host execution fallback.
+
+Before execution, the TUI/CLI shows the image, full command, original working
+directory and copy semantics for approval. After approval, a fresh snapshot
+includes current workspace edits, excluding `.git`, `.runtime`, `.eval`,
+`.venv`, `venv`, Python/pytest/uv caches, `node_modules`, and `.env*`. Other files
+can still contain sensitive data; only use a trusted Docker daemon and image.
+Symbolic links, Windows junctions/reparse points and special files are rejected.
+Snapshots are limited to 64 MB and 10,000 entries. The snapshot is mounted
+read-only at `/input` and copied into container-only `/workspace`; a relative
+working directory maps to the same subdirectory there.
+
+Containers run as UID/GID 65534 with network disabled, a read-only root
+filesystem, all capabilities dropped and privilege escalation disabled. Limits
+are one CPU, 512 MiB memory with no additional swap, 64 processes, 256 MiB
+workspace tmpfs and 64 MiB temporary tmpfs. The command never receives the
+Docker socket, the original workspace mount or host API-key environment
+variables. Docker log persistence is disabled. Commands are passed as argument
+arrays, without an implicit shell; an explicitly approved interpreter can
+still execute code inside the sandbox.
+
+Snapshot creation, container setup and execution share a 30-second limit;
+command output is capped at 32 KB. The result reports the container's actual
+exit code. On completion, timeout, excess output or cancellation, the harness
+force-removes the named container, then deletes its host snapshot. Cleanup has
+a separate 10-second limit; a daemon failure can leave an orphaned container
+and is reported. Stopping only the Docker client is insufficient, so container
+removal is also requested. Commands with unknown outcomes are not replayed.
+
+**Command-created changes and artifacts are discarded, never copied back.**
+Each subsequent command gets a new snapshot of the host workspace. This tool
+is for verification; source modifications should use the approved file tools.
+It does not put the entire Agent in a container or provide a diff-export flow
+for command-generated changes. Linux container compatibility and the chosen
+image are required; ordinary containers still share their Linux host kernel.
+
+Offline regression tests do not require Docker. To verify real isolation after
+building the image, explicitly opt in (PowerShell):
+
+```powershell
+$env:LARIO_TEST_DOCKER = "1"
+uv run --locked pytest -q test/test_command.py -k real_docker
+Remove-Item Env:LARIO_TEST_DOCKER
+```
+
+This integration check verifies non-root execution, workspace-copy writes,
+read-only input/root restrictions, network isolation and nonzero exit-code
+reporting. It runs no model calls and does not pull an image.
 
 ## Development checks
 

@@ -218,6 +218,7 @@ async def test_cancelled_run_records_interrupted_session(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_tui_runs_task_and_renders_answer(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("coding_agent.tui.platform.system", lambda: "Linux")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "other-home"))
     provider = ScriptedProvider([
         ChatResponse(
             message=AssistantMessage(content=[TextPart(text="Done\n\nMore")]),
@@ -298,15 +299,12 @@ async def test_tui_runs_task_and_renders_answer(tmp_path: Path, monkeypatch) -> 
         assert copied == [((["pbcopy"],), {"input": "Done", "text": True, "check": False})]
 
 
-@pytest.mark.skipif(
-    platform.system() != "Darwin" or not Path("/usr/bin/sandbox-exec").is_file(),
-    reason="requires macOS sandbox-exec",
-)
 @pytest.mark.asyncio
 @pytest.mark.parametrize("filename, exit_code", [("note.txt", 0), ("missing.txt", 1)])
 async def test_tui_approves_exact_command_and_working_directory(
-    tmp_path: Path, filename: str, exit_code: int,
+    tmp_path: Path, filename: str, exit_code: int, fake_docker,
 ) -> None:
+    fake_docker.exit_code = exit_code
     (tmp_path / "note.txt").write_text("checked", encoding="utf-8")
     provider = ScriptedProvider([
         ChatResponse(message=AssistantMessage(content=[ToolCallPart(
@@ -332,6 +330,8 @@ async def test_tui_approves_exact_command_and_working_directory(
         detail = "\n".join(log_text(line) for line in app.screen.query_one("#diff").lines)
         assert f"working directory: {tmp_path.resolve()}" in detail
         assert f"command: /bin/cat {filename}" in detail
+        assert "Docker sandbox" in detail
+        assert "Command changes are discarded" in app.screen.description
         await pilot.click("#apply")
         await pilot.pause(0.2)
         assert app.show_steps is False

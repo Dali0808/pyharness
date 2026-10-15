@@ -762,7 +762,7 @@ def create_app(
             self.push_screen(ApprovalScreen(
                 format_command(argv, cwd),
                 title="Run verification command",
-                description="This command may modify files in the workspace.",
+                description="Runs in an offline Docker workspace copy. Command changes are discarded.",
                 action="Run",
             ), finished)
             return await decision
