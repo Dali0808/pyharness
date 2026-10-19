@@ -2,6 +2,29 @@
 
 A small Python agent harness with workspace tools and deterministic evaluation cases.
 
+## Web interface
+
+Lario Web shares the TUI's `run_task()` execution, streaming model provider,
+workspace tools, file/command approvals, cancellation, context budgeting,
+read-only subagents and JSONL sessions. Build the UI once with Node.js 22.18+:
+
+```sh
+uv sync --locked
+cd frontend
+npm ci
+npm run build
+cd ..
+uv run --locked lario-web --workspace .
+```
+
+Set the model's API key environment variable **before starting the server**.
+Open the complete loopback URL printed by the terminal, trust the workspace,
+then configure the model in the page's settings or reuse `.runtime/lario.json`.
+The service requires a per-launch connection token and accepts same-origin
+loopback requests only. File changes apply after approval; commands use the
+existing Docker sandbox. Closing all connected pages cancels the task after
+a 20-second reconnect window. See [Web setup and verification](frontend/README.md).
+
 ## Quick start
 
 Requires Python 3.11+, `uv`, and an OpenAI-compatible model API. Install the

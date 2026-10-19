@@ -1,6 +1,6 @@
 # pyharness 优化开发交接
 
-> 更新于 2026-10-15，Docker 命令沙箱已实现，并完成用户异机基础验收。长期约束见 [AGENTS.md](AGENTS.md)；本文件只记录进度、取舍与阶段验收。开始新阶段前以当前代码为准。
+> 更新于 2026-10-19，Web 已接入 TUI 共用的真实任务执行入口；本次未进行收费模型或真实 Docker 试跑。Docker 命令沙箱已有用户异机基础验收。长期约束见 [AGENTS.md](AGENTS.md)；本文件只记录进度、取舍与阶段验收。开始新阶段前以当前代码为准。
 
 ## 目标与取舍
 
@@ -11,6 +11,49 @@
 保留六个阶段用于记录进度，但把“先做真实任务，再完善体验”作为顺序。每阶段只实现必需能力，验证一条成功路径和关键失败路径；影响数据或权限的边界仍按 `AGENTS.md` 处理。
 
 ## 当前进度
+
+### 2026-10-19：修复本机前端依赖安装中断
+
+- 用户默认 Node 18.20.8 低于前端要求；已确认旧 Vite preview 进程 11640 加载了报错的 Rollup 原生模块，停止该项目预览后解除文件占用。未停止 Python 网页服务，也未更改系统默认 Node。
+- 使用本机已有 Node 24.19.0 重新执行 `cd frontend` 后的 `npm ci` 与 `npm run build`，均成功；构建包含 TypeScript 检查。补充前端 README 的版本检查、Windows 文件占用和安装中断说明。本次无运行时代码修改，未重跑 Python 或浏览器测试，也未调用真实模型。
+
+### 2026-10-19：Web 接入真实 Python Agent（尚未提交）
+
+- 新增 `coding_agent/web.py` 和 `lario-web` 入口，通过 FastAPI/Uvicorn 提供本机 HTTP/SSE 和构建后的前端。复用 `run_task()`、真实 OpenAI-compatible Provider、工具注册、上下文预算、只读子 Agent、可选 MemoryCore 与 JSONL v2；界面不实现 Agent 决策。删除前端演示 reducer 和固定回复，保留已确认的首页及工作台风格。
+- 从 TUI 提取 `coding_agent/settings.py`，两端共用原 `.runtime/lario.json` 格式。网页支持模型/Provider/API 地址/环境变量名/步数/上下文窗口/多 Agent/Session 路径设置。新建与选择会话持久化当前路径，刷新恢复服务内状态，重启恢复已保存历史；工具未知结果不自动重放。
+- 审批展示真实工作区相对路径、diff 或完整命令及目录；通过异步 Future 阻塞原工具，审批绑定操作与运行 ID 且只能使用一次。停止撤销审批并等待原取消/容器清理；最后一条 SSE 连接断开 20 秒后自动停止，重连只取状态、不重放写请求。
+- 只监听 `127.0.0.1`，校验 Host/Origin 与每次启动的随机连接令牌；令牌由 URL fragment 转入当前标签 sessionStorage，API Key 不进入浏览器或配置文件。启动需确认工作区信任；当前每个服务实例只允许一个活动任务。Markdown 禁止原始 HTML 与自动外部图片加载。界面展示有界窗口，完整 Session 历史不按界面截短。
+- 修复此次 Windows 验收发现的既有兼容性：grep 输出统一 POSIX 分隔符；子任务历史写入在可用平台保留 `O_NOFOLLOW`/`fchmod`，Windows 继续执行路径与符号链接检查。符号链接测试只在明确的 Windows 1314 权限错误时跳过，Linux 仍实际验证。
+- 最终验证（Node.js 24.19.0、Windows Python 3.11.15、WSL Ubuntu 24.04 Python 3.12.3）：
+  - `uv run --locked pytest -q test/test_web.py`：14 passed。
+  - Windows `uv run --locked pytest -q`：247 passed、7 skipped；跳过项涉及符号链接权限、Linux 容器引导与显式真实 Docker 测试。首次全套的 grep 路径与符号链接权限失败已按上述原因处理，最终无失败。
+  - WSL `UV_PROJECT_ENVIRONMENT=/var/tmp/pyharness-web-20261019 /var/tmp/pyharness-docker-tests-20261013/bin/uv run --locked --directory /mnt/c/Users/zdl/Documents/lessons/pyharness pytest -q`：253 passed、1 skipped（显式真实 Docker 集成测试）。
+  - `cd frontend` 后 `$env:LARIO_BROWSER_CHANNEL = 'msedge'; npm run test:e2e`：6 passed，包含 TypeScript 与生产构建。浏览器通过真实 HTTP/SSE、`run_task()` 和文件工具，在临时目录验证发送、审批后真实写文件、命令退出码展示、待审批刷新、设置持久化、移动端、文本转义、流式停止和主题；Provider/Docker 为测试注入，不调用收费模型或真实容器。
+- 代表性测试链路：`test_web_write_requires_current_one_time_approval_and_persists_session` 从 API 到共用执行入口、diff Future、真实文件写入和 JSONL；`test_web_real_openai_adapter_with_offline_sse_transport` 经真实 OpenAI-compatible 流式适配器和 MockTransport 验证请求与增量输出；`test_web_multi_agent_uses_shared_bounded_delegate_and_saves_child_history` 验证子任务工具范围、累计步数、历史文件与重启恢复；断连/停止测试验证审批失效及未知结果恢复配对。
+- 已启动本机真实服务并验证页面 200、无令牌 API 401、认证状态可读取；页面打开请求已排入应用。当前进程模型未配置、API Key 未设置，**未做真实模型试跑**。本次也未新增真实容器验收或真实编码成功率数据。配置方法、范围和限制见 [frontend/README.md](frontend/README.md)。服务从源码 `frontend/dist` 提供静态资源，发行包前端打包、公网部署、多用户与跨进程 Session 并发锁不在本次范围；不要让 TUI 与 Web 同时写入一个 Session。O6 独立新用户验收状态不变。
+
+### 2026-10-19：增加对话输入首页（尚未提交）
+
+- 默认显示独立的简洁首页，保留品牌、双行标题、渐变输入框与模型设置；发送后切换到原三栏工作台，首条任务带入对话并立即开始演示。新建会话回到首页，输入框自动聚焦。复用同一输入表单，没有新增依赖。
+- 首页与工作台根据当前会话是否有消息切换，URL 不变，浏览器后退不用于这两个视图的切换。数据仍仅保留在页面内存中，刷新回到首页；不接入模型或 Python 后端。
+- 验证：Node.js 24.19.0，`cd frontend` 后执行 `npm test`，7 passed；`$env:LARIO_BROWSER_CHANNEL = 'msedge'; npm run test:e2e`，5 passed，含 TypeScript 检查与生产构建。已查看桌面首页、390px 首页及发送后的工作台截图；本机 5173 预览返回 200 并提供最新构建。
+- 代表性链路：首页发送按钮 / Enter → 共用表单 → reducer 保存一条用户消息 → 工作台及审批闭环；新建会话 → 空会话 → 首页；Shift+Enter 与中文输入法确认维持输入状态。浏览器测试另覆盖窄屏导航、文本转义、设置校验、渐变与减少动画。未修改 Python，也未运行 Python 测试或真实模型验收；字体仍在测试中使用离线系统回退。
+
+### 2026-10-19：按用户参考调整 Web 风格（尚未提交）
+
+- 将首版工作台改为用户提供参考中的近黑背景、灰色细线、白色胶囊按钮、黄至青绿的输入框底光与发送光环；新增 24 条射线的内联 SVG 标志及空会话双行标题。沿用现有三栏工作台、审批、停止、设置和窄屏交互，不改变演示状态机与 Python 运行逻辑。
+- 按参考加载 Google Fonts Inter 400/500/600，失败时回退到系统字体；没有新增依赖。支持减少动画偏好，禁用标题入场与光环旋转。
+- 验证：使用 Node.js 24.19.0、Edge，`cd frontend` 后执行 `$env:LARIO_BROWSER_CHANNEL = 'msedge'; npm run test:e2e`，生产构建及 TypeScript 检查通过，5 个浏览器测试通过；已查看桌面、空会话、390px 窄屏截图。字体请求在测试中被本地替换，不访问外网；截图展示的是系统回退字体，未验证 Google Fonts 的实际可达性。
+- 代表性链路：审批按钮 → 原演示状态机 → 命令示例输出；主题测试从新会话入口检查近黑画布、渐变输入框、24 条射线及减少动画模式。没有修改 Python 代码，未运行 Python 测试；仍未接入真实 Agent。
+
+### 2026-10-19：第一版 Lario Web 界面（尚未提交）
+
+- 按用户确认的方案完成第一阶段：新增独立 `frontend/`，使用 React、TypeScript、Vite，提供三栏工作台、会话导航、固定示例的逐步回复、工具步骤、diff/命令审批、停止、模型设置和窄屏抽屉。
+- 全部数据为明确标记的演示数据，仅存页面内存，刷新重置。未接入 Python、模型、文件工具、Docker 或真实 Session；未修改既有 CLI/TUI 与 Python 依赖。审批有次序与一次性检查，停止后迟到事件无效，运行期间不能切换会话。
+- 验证使用应用自带的 Node.js 24.19.0 和本机 Edge：`cd frontend` 后执行 `npm test`（6 passed）、`npm run build`（TypeScript 与生产构建通过）、`$env:LARIO_BROWSER_CHANNEL = 'msedge'; npm run test:e2e`（4 passed）。测试不调用真实模型或外部服务。启动、验证和使用步骤见 [frontend/README.md](frontend/README.md)。
+- 本机默认 Node 为 18.20.8，不满足前端要求（22.18+）；受限环境首次 npm/浏览器启动遇到 `EPERM: lstat C:\Users\zdl`。依赖安装和无界面浏览器检查经授权在限制外完成。开发服务器首屏截图检查出现过加载超时，浏览器验收已改为构建后用 preview 检查最终产物，并保留失败轨迹。
+- 代表性链路：页面批准修改 → 演示状态机 → 命令审批 → 预置输出；停止 → 清除待审批状态 → 拒绝迟到操作；窄屏任务输入 → React 文本渲染，验证输入文本不会被当作 HTML。界面测试另覆盖多行输入、输入法 Enter 和设置校验。
+- 未运行 Python 全套：本次未修改 Python 代码与测试。没有真实 Agent 端到端验收或新的编码成功率数据。下一步是按已讨论方案接入 `run_task()`、HTTP/SSE 与真实 Session；接入真实写入前补全本机访问认证、来源校验、审批失效和断线恢复。本次不改变 O6 的状态。
 
 2026-10-15 提交前复核与用户异机验收（尚未提交）：
 

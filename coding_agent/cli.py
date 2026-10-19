@@ -360,10 +360,11 @@ async def run_task(
             if sibling.is_symlink():
                 raise ValueError("subtask history path must not be a symlink")
             descriptor = os.open(
-                sibling, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600
+                sibling, os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600
             )
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                os.fchmod(stream.fileno(), 0o600)
+                if hasattr(os, "fchmod"):
+                    os.fchmod(stream.fileno(), 0o600)
                 for message in messages:
                     stream.write(json.dumps({
                         "task_id": task_id,

@@ -106,7 +106,12 @@ def test_multi_agent_session_cannot_resume_as_single(tmp_path: Path) -> None:
 async def test_subtask_history_rejects_symlink(tmp_path: Path) -> None:
     outside = tmp_path.parent / f"{tmp_path.name}-outside.txt"
     outside.write_text("unchanged", encoding="utf-8")
-    (tmp_path / "session.jsonl.subtasks.jsonl").symlink_to(outside)
+    try:
+        (tmp_path / "session.jsonl.subtasks.jsonl").symlink_to(outside)
+    except OSError as exc:
+        if getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Creating symbolic links requires additional Windows privileges")
+        raise
     provider = ScriptedProvider([
         response(call("delegate_task", {"task": "Inspect files"}, "delegate")),
         response(TextPart(text="Findings.")),

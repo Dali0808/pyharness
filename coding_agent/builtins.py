@@ -305,7 +305,7 @@ def create_grep_file_tool(workspace_root: Path) -> AgentTool:
                 ):
                     if arguments.pattern in line:
                         hits.append(
-                            f"{path.relative_to(root)}:{number}:{line[:200]}"
+                            f"{path.relative_to(root).as_posix()}:{number}:{line[:200]}"
                         )
                         if len(hits) >= MAX_MATCHES:
                             break

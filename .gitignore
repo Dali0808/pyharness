@@ -43,3 +43,9 @@ Thumbs.db
 *.log
 demo-session.jsonl
 .uv-cache/
+
+# Web prototype dependencies and verification artifacts
+frontend/node_modules/
+frontend/.npm-cache/
+frontend/test-results/
+frontend/playwright-report/
