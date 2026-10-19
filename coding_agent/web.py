@@ -12,10 +12,12 @@ from dataclasses import dataclass, field, replace
 from io import StringIO
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal, Sequence
+from collections.abc import Callable
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -28,9 +30,9 @@ from coding_agent.builtins import resolve_workspace_path
 from coding_agent.cli import (
     CliConfig, ProviderFactory, assistant_text, close_provider, create_provider, run_task,
 )
-from coding_agent.command import format_command
+from coding_agent.files import ASSISTANT_SYSTEM_PROMPT, FileLimits, FileStore
 from coding_agent.session import JsonlSessionStore, validate_session_metadata
-from coding_agent.settings import WorkspaceSettings, parse_interface_args, save_settings
+from coding_agent.settings import load_settings, parse_interface_args, save_settings
 
 
 class Input(BaseModel):
@@ -43,16 +45,11 @@ class TaskInput(Input):
 
 
 class SessionInput(Input):
-    path: str | None = Field(default=None, min_length=1, max_length=500)
+    pass
 
 
 class TrustInput(Input):
     trusted: Literal[True]
-
-
-class DecisionInput(Input):
-    approved: bool
-    run_id: str
 
 
 @dataclass
@@ -88,17 +85,21 @@ class RunOutput(StringIO):
 class WebService:
     """One workspace and one active run; execution remains in run_task()."""
 
-    def __init__(self, config: CliConfig, provider_factory: ProviderFactory) -> None:
-        self.config = config
+    def __init__(self, config: CliConfig, provider_factory: ProviderFactory, *, file_limits: FileLimits = FileLimits()) -> None:
+        self.files = FileStore(resolve_workspace_path(config.workspace, ".runtime/assistant"), file_limits)
+        session_folder = self.files.root / "sessions"
+        session_folder.mkdir(exist_ok=True, mode=0o700)
+        selected = config.session_path
+        if selected is None or selected.parent != session_folder:
+            saved = load_settings(self.files.root)
+            selected = resolve_workspace_path(self.files.root, saved.session) if saved.session.startswith("sessions/") else session_folder / "default.jsonl"
+        self.config = config = replace(config, system_prompt=ASSISTANT_SYSTEM_PROMPT, session_path=selected)
         self.provider_factory = provider_factory
         self.trusted = False
         self.sessions: dict[str, WebSession] = {}
         self.active = self.add_session(str(config.session_path.relative_to(config.workspace)))
         self.task: asyncio.Task[None] | None = None
         self.run_id: str | None = None
-        self.approval: dict[str, Any] | None = None
-        self.decision: asyncio.Future[bool] | None = None
-        self.current_call: ToolCallPart | None = None
         self.revision = 0
         self.changed = asyncio.Event()
         self.clients = 0
@@ -106,6 +107,8 @@ class WebService:
 
     def path(self, relative: str) -> Path:
         path = resolve_workspace_path(self.config.workspace, relative)
+        if path.parent != self.files.root / "sessions" or path.suffix != ".jsonl":
+            raise ValueError("assistant sessions must stay in the managed session directory")
         if path.is_dir():
             raise ValueError("session path must be a file")
         return path
@@ -173,7 +176,7 @@ class WebService:
 
     def trust(self) -> None:
         self.require_idle()
-        folder = resolve_workspace_path(self.config.workspace, ".runtime/web/sessions")
+        folder = self.files.root / "sessions"
         self.trusted = True
         if folder.is_dir():
             for path in sorted(folder.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)[:100]:
@@ -185,38 +188,31 @@ class WebService:
             except (OSError, ValueError) as exc:
                 session.failure = str(exc)
                 session.phase = "failed"
+            if session is not self.active:
+                session.messages = []
+                session.tools = []
         self.notify()
 
     def snapshot(self) -> dict[str, Any]:
         self.trim_view()
-        settings = {name: getattr(self.config, name) for name in WorkspaceSettings.model_fields if name != "session"}
-        settings["session"] = self.active.path
         return {
             "revision": self.revision, "trusted": self.trusted,
-            "workspace": str(self.config.workspace), "settings": settings,
+            "workspace": "资料空间", "settings": {"model_id": self.config.model_id}, "mode": "assistant",
             "api_key_set": bool(os.environ.get(self.config.api_key_env)),
             "sessions": [{"id": s.id, "title": s.title, "path": s.path} for s in self.sessions.values()],
-            "active": {**vars(self.active), "run_id": self.run_id, "approval": self.approval},
+            "active": {**vars(self.active), "run_id": self.run_id},
+            "files": self.files.listing(),
             "busy": self.task is not None,
         }
-
-    def configure(self, settings: WorkspaceSettings) -> None:
-        self.require_trust()
-        self.require_idle()
-        path = self.path(settings.session)
-        updated = replace(self.config, **settings.model_dump(exclude={"session"}), session_path=path)
-        session = self.add_session(settings.session)
-        self.restore(session, recover=True)
-        save_settings(updated)
-        self.config = updated
-        self.active = session
-        self.notify()
 
     def select(self, session: WebSession) -> None:
         self.restore(session, recover=True)
         updated = replace(self.config, session_path=self.path(session.path))
-        save_settings(updated)
+        save_settings(replace(updated, workspace=self.files.root))
         self.config = updated
+        if self.active is not session:
+            self.active.messages = []
+            self.active.tools = []
         self.active = session
         self.notify()
 
@@ -227,7 +223,11 @@ class WebService:
             raise HTTPException(409, "当前会话已切换，请刷新后重试")
         if not body.text.strip() or not self.config.model_id.strip():
             raise HTTPException(422, "任务和模型名称不能为空，请先配置模型")
+        if sum(p.stat().st_size for p in (self.files.root / "sessions").glob("*.jsonl") if not p.is_symlink()) > 32_000_000:
+            raise HTTPException(413, "会话历史已超过 32 MB，请先删除旧会话")
         path = self.path(self.active.path)
+        if self.files.listing()["bytes"] > self.files.limits.max_storage_bytes:
+            raise HTTPException(413, "资料空间超出存储限额，请先删除文件")
         if path.exists():
             if path.stat().st_size > 32_000_000:
                 raise ValueError("session exceeds the 32 MB web loading limit; use a new session")
@@ -266,7 +266,6 @@ class WebService:
                 session.messages = session.messages[-200:]
             session.live = ""
         elif isinstance(event, ToolStarted):
-            self.current_call = event.call
             session.tools.append({"id": event.call.id, "name": event.call.name, "arguments": clip(event.call.arguments_json), "status": "running", "output": ""})
             session.tools = session.tools[-100:]
         elif isinstance(event, ToolFinished):
@@ -278,32 +277,6 @@ class WebService:
             session.notices = clip(session.notices + (f"\n只读子任务：{event.task}" if isinstance(event, SubtaskStarted) else f"\n子任务结束：{event.failure_code or 'completed'}，{event.steps} 步"))
         self.notify()
 
-    async def ask(self, kind: str, detail: str) -> bool:
-        self.decision = asyncio.get_running_loop().create_future()
-        self.approval = {"id": uuid4().hex, "run_id": self.run_id, "kind": kind, "detail": detail}
-        if self.active.tools:
-            self.active.tools[-1]["detail"] = detail
-            if kind == "edit" and self.current_call is not None:
-                self.approval["path"] = json.loads(self.current_call.arguments_json).get("path", "")
-        self.active.phase = "awaiting_edit" if kind == "edit" else "awaiting_command"
-        self.notify()
-        try:
-            return await self.decision
-        finally:
-            self.approval = None
-            self.current_call = None
-            self.decision = None
-            if self.active.phase != "stopping":
-                self.active.phase = "running"
-            self.notify()
-
-    def decide(self, approval_id: str, body: DecisionInput) -> None:
-        if not self.approval or self.approval["id"] != approval_id or body.run_id != self.run_id or self.decision is None or self.decision.done():
-            raise HTTPException(409, "此审批已失效，请使用当前审批")
-        self.decision.set_result(body.approved)
-        self.approval = None
-        self.notify()
-
     async def run(self, config: CliConfig) -> None:
         provider = None
         output = RunOutput()
@@ -311,8 +284,7 @@ class WebService:
             provider = self.provider_factory(config)
             result = await run_task(
                 config, provider, output, on_event=self.on_event,
-                approve=lambda diff: self.ask("edit", diff),
-                approve_command=lambda argv, cwd: self.ask("command", format_command(argv, cwd)),
+                tools=self.files.tools(), read_root=self.files.root / "documents", memory_from_env=False,
             )
             failure = result.run_result.failure
             self.active.phase = "completed" if result.exit_code == 0 else "cancelled" if failure and failure.code == "cancelled" else "failed"
@@ -326,11 +298,6 @@ class WebService:
             self.active.phase = "failed"
             self.active.failure = f"{type(exc).__name__}: {exc}"
         finally:
-            self.approval = None
-            self.current_call = None
-            if self.decision is not None and not self.decision.done():
-                self.decision.cancel()
-            self.decision = None
             for tool in self.active.tools:
                 if tool["status"] == "running":
                     tool.update(status="interrupted", output="操作被中断；检查工作区后再决定是否重试，不会自动重放。")
@@ -353,7 +320,6 @@ class WebService:
         task = self.task
         if task is None:
             return
-        self.approval = None
         self.active.phase = "stopping"
         self.notify()
         task.cancel()
@@ -377,13 +343,15 @@ class WebService:
             self.disconnect_timer = None
             await self.stop()
 
-    async def stream(self) -> AsyncIterator[str]:
+    async def stream(self, authorized: Callable[[], bool] | None = None) -> AsyncIterator[str]:
         self.clients += 1
         if self.disconnect_timer:
             self.disconnect_timer.cancel()
         revision = -1
         try:
             while True:
+                if authorized is not None and not authorized():
+                    return
                 self.changed.clear()
                 if revision != self.revision:
                     revision = self.revision
@@ -430,51 +398,85 @@ def create_web_app(
         if request.url.path.startswith("/api/"):
             if not secrets.compare_digest(request.headers.get("authorization", "").encode(), f"Bearer {token}".encode()):
                 return JSONResponse({"detail": "请使用启动终端中带连接令牌的地址"}, status_code=401)
-            if request.headers.get("content-length", "0").isdigit() and int(request.headers.get("content-length", "0")) > 32_768:
+            limit = 1_000_000 if request.url.path.startswith("/api/files/documents/") else 32_768
+            if request.headers.get("content-length", "0").isdigit() and int(request.headers.get("content-length", "0")) > limit:
                 return JSONResponse({"detail": "请求内容过大"}, status_code=413)
+            if request.method not in {"GET", "HEAD"}:
+                try:
+                    request._body = await bounded_body(request, limit)
+                except HTTPException as exc:
+                    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
         response = await call_next(request)
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+        secure_headers(response)
         return response
 
+    @app.get("/api/auth/mode")
+    async def auth_mode():
+        return {"mode": "token"}
+    add_workspace_routes(app, lambda _: service)
+    mount_frontend(app, static_dir)
+    return app
+
+
+def secure_headers(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+
+
+async def bounded_body(request: Request, limit: int) -> bytes:
+    data = bytearray()
+    try:
+        async with asyncio.timeout(30):
+            async for chunk in request.stream():
+                if len(data) + len(chunk) > limit:
+                    raise HTTPException(413, "请求内容过大")
+                data.extend(chunk)
+    except TimeoutError:
+        raise HTTPException(408, "上传超时，请重试") from None
+    return bytes(data)
+
+
+def add_workspace_routes(app: FastAPI, service_for: Callable[[Request], WebService]) -> None:
     @app.exception_handler(ValueError)
     async def invalid(request: Request, exc: ValueError) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
     @app.exception_handler(OSError)
     async def storage_error(request: Request, exc: OSError) -> JSONResponse:
-        return JSONResponse({"detail": f"本地存储不可用：{type(exc).__name__}"}, status_code=500)
+        status = 409 if isinstance(exc, FileExistsError) else 404 if isinstance(exc, FileNotFoundError) else 500
+        return JSONResponse({"detail": f"文件操作失败：{type(exc).__name__}"}, status_code=status)
 
     @app.get("/api/state")
-    async def state() -> dict[str, Any]:
-        return service.snapshot()
+    async def state(request: Request) -> dict[str, Any]:
+        return service_for(request).snapshot()
 
     @app.get("/api/events")
-    async def events() -> StreamingResponse:
-        return StreamingResponse(service.stream(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"})
+    async def events(request: Request) -> StreamingResponse:
+        return StreamingResponse(service_for(request).stream(getattr(request.state, "authorized", None)), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"})
 
     @app.post("/api/trust")
-    async def trust(body: TrustInput) -> dict[str, Any]:
+    async def trust(request: Request, body: TrustInput) -> dict[str, Any]:
+        service = service_for(request)
         service.trust()
         return service.snapshot()
 
-    @app.post("/api/settings")
-    async def settings(body: WorkspaceSettings) -> dict[str, Any]:
-        service.configure(body)
-        return service.snapshot()
-
     @app.post("/api/sessions")
-    async def new_session(body: SessionInput) -> dict[str, Any]:
+    async def new_session(request: Request, body: SessionInput) -> dict[str, Any]:
+        service = service_for(request)
         service.require_trust()
         service.require_idle()
-        session = service.add_session(body.path or f".runtime/web/sessions/{uuid4().hex}.jsonl")
+        if len(service.sessions) >= 100:
+            raise HTTPException(413, "最多保留 100 个会话，请先删除旧会话")
+        relative = (service.files.root / "sessions" / f"{uuid4().hex}.jsonl").relative_to(service.config.workspace).as_posix()
+        session = service.add_session(relative)
         service.select(session)
         return service.snapshot()
 
     @app.post("/api/sessions/{session_id}/select")
-    async def select_session(session_id: str) -> dict[str, Any]:
+    async def select_session(request: Request, session_id: str) -> dict[str, Any]:
+        service = service_for(request)
         service.require_trust()
         service.require_idle()
         if session_id not in service.sessions:
@@ -484,24 +486,77 @@ def create_web_app(
         return service.snapshot()
 
     @app.post("/api/tasks")
-    async def tasks(body: TaskInput) -> dict[str, Any]:
+    async def tasks(request: Request, body: TaskInput) -> dict[str, Any]:
+        service = service_for(request)
         service.start(body)
         return service.snapshot()
 
-    @app.post("/api/approvals/{approval_id}")
-    async def decide(approval_id: str, body: DecisionInput) -> dict[str, Any]:
-        service.decide(approval_id, body)
-        return service.snapshot()
-
     @app.post("/api/stop")
-    async def stop() -> dict[str, Any]:
+    async def stop(request: Request) -> dict[str, Any]:
+        service = service_for(request)
         await service.stop()
         return service.snapshot()
 
+    @app.post("/api/files/documents/{name}")
+    async def upload(request: Request, name: str) -> dict[str, Any]:
+        service = service_for(request)
+        service.require_trust()
+        service.require_idle()
+        data = await bounded_body(request, service.files.limits.max_file_bytes)
+        service.require_idle()
+        service.files.put("documents", name, data)
+        service.notify()
+        return service.snapshot()
+
+    @app.get("/api/files/{kind}/{name}")
+    async def download(request: Request, kind: Literal["documents", "artifacts"], name: str) -> Response:
+        service = service_for(request)
+        service.require_trust()
+        path = service.files.path(kind, name)
+        if not path.is_file():
+            raise HTTPException(404, "文件不存在")
+        if path.stat().st_size > service.files.limits.max_file_bytes:
+            raise HTTPException(413, "文件超过大小限制")
+        return Response(path.read_bytes(), media_type="application/octet-stream", headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name, safe='')}"})
+
+    @app.delete("/api/files/{kind}/{name}")
+    async def delete_file(request: Request, kind: Literal["documents", "artifacts"], name: str) -> dict[str, Any]:
+        service = service_for(request)
+        service.require_trust()
+        service.require_idle()
+        service.files.path(kind, name).unlink()
+        service.notify()
+        return service.snapshot()
+
+    @app.delete("/api/sessions/{session_id}")
+    async def delete_session(request: Request, session_id: str) -> dict[str, Any]:
+        service = service_for(request)
+        service.require_trust()
+        service.require_idle()
+        session = service.sessions.get(session_id)
+        if session is None:
+            raise HTTPException(404, "会话不存在")
+        path = service.path(session.path)
+        path.unlink(missing_ok=True)
+        path.with_name(path.name + ".subtasks.jsonl").unlink(missing_ok=True)
+        del service.sessions[session_id]
+        if service.active is session:
+            if not service.sessions:
+                relative = (path.parent / f"{uuid4().hex}.jsonl").relative_to(service.config.workspace).as_posix()
+                service.add_session(relative)
+            service.select(next(iter(service.sessions.values())))
+        service.notify()
+        return service.snapshot()
+
+    @app.api_route("/api/{unknown:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+    async def unknown_api(unknown: str):
+        raise HTTPException(404, "接口不存在")
+
+
+def mount_frontend(app: FastAPI, static_dir: Path | None = None) -> None:
     assets = static_dir or Path(__file__).resolve().parent.parent / "frontend" / "dist"
     if assets.is_dir():
         app.mount("/", StaticFiles(directory=assets, html=True), name="frontend")
-    return app
 
 
 def main(argv: Sequence[str] | None = None) -> None:

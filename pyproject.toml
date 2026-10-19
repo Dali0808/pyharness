@@ -13,6 +13,7 @@ dependencies = [
 [project.scripts]
 lario = "coding_agent.tui:main"
 lario-web = "coding_agent.web:main"
+lario-server = "coding_agent.server:main"
 
 [build-system]
 requires = ["setuptools>=61"]

@@ -211,7 +211,7 @@ class RequestBudgetManager(ContextManager):
         if context_window <= 0:
             raise ValueError("context_window must be positive")
         self.context_window = context_window
-        self.output_reserve = max(32, min(1024, context_window // 8))
+        self.output_reserve = max(32, min(4096, context_window // 8))
         self._summarizer = summarizer
         self._on_compaction = on_compaction
         self._summary: UserMessage | None = None

@@ -4,9 +4,12 @@ A small Python agent harness with workspace tools and deterministic evaluation c
 
 ## Web interface
 
-Lario Web shares the TUI's `run_task()` execution, streaming model provider,
-workspace tools, file/command approvals, cancellation, context budgeting,
-read-only subagents and JSONL sessions. Build the UI once with Node.js 22.18+:
+One Agent core, two products: Web reads uploaded documents and produces
+downloadable reports; TUI edits local projects with diff approvals and Docker
+verification. Both share `run_task()`, streaming, context budgets and JSONL.
+Web never registers `write_file`, `edit_file` or `run_command`.
+
+Build a local assistant preview with Node.js 22.18+ (recommended 24):
 
 ```sh
 uv sync --locked
@@ -14,16 +17,20 @@ cd frontend
 npm ci
 npm run build
 cd ..
-uv run --locked lario-web --workspace .
+uv run --locked lario-web --workspace . --model deepseek-chat --context-window 64000
 ```
 
 Set the model's API key environment variable **before starting the server**.
-Open the complete loopback URL printed by the terminal, trust the workspace,
-then configure the model in the page's settings or reuse `.runtime/lario.json`.
-The service requires a per-launch connection token and accepts same-origin
-loopback requests only. File changes apply after approval; commands use the
-existing Docker sandbox. Closing all connected pages cancels the task after
-a 20-second reconnect window. See [Web setup and verification](frontend/README.md).
+Open the complete loopback URL printed by the terminal and enable the managed
+document space. Upload files through the page; `--workspace` is a storage base,
+not permission to read that project's files. Only uploaded UTF-8 documents are
+available to the model. Closing all pages cancels after a 20-second grace period.
+
+For multiple users, `lario-server` provides administrator-created accounts,
+isolated storage and configurable quotas. Users cannot edit the server's model
+or API credentials. See [Web usage](frontend/README.md),
+[server deployment and recovery](deploy/README.md), and
+[independent TUI installation and upgrades](TUI_INSTALL.md).
 
 ## Quick start
 

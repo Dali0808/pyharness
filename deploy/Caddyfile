@@ -1,0 +1,8 @@
+{$LARIO_DOMAIN} {
+    request_body {
+        max_size 1MB
+    }
+    reverse_proxy web:8000 {
+        flush_interval -1
+    }
+}

@@ -301,3 +301,25 @@ h1 { font-size: 25px; letter-spacing: -.6px; line-height: 1.4; font-weight: 500;
 @media (max-width: 720px) { .workbench, .workbench.review-closed { grid-template-columns: minmax(0, 1fr); grid-template-rows: 57px minmax(0, 1fr); min-height: 420px; } .sidebar { display: none; position: fixed; inset: 0 auto 0 0; width: 260px; z-index: 40; } .nav-open .sidebar { display: flex; } .nav-backdrop { display: block; position: fixed; inset: 0; z-index: 35; background: radial-gradient(ellipse at 10% 10%, #d2ae1a14, transparent 60%), radial-gradient(ellipse at 95% 90%, #78d0cd14, transparent 60%), #0c0c0cba; backdrop-filter: blur(22px) saturate(120%); } .topbar { grid-column: 1; padding: 0 12px; gap: 4px; } .mobile-nav { display: inline-flex; } .breadcrumbs { gap: 7px; } .breadcrumbs > svg, .breadcrumb-slash, .breadcrumb-current { display: none; } .topbar-actions { gap: 8px; } .model-button { font-size: 10px; gap: 4px; } .model-button > span { max-width: 108px; } .demo-badge { font-size: 9px; padding: 4px 6px; } .topbar-divider { display: none; } .conversation { grid-column: 1; } .conversation-heading { padding: 22px 20px 20px; flex-wrap: wrap; gap: 8px; } h1 { font-size: 19px; } .conversation-heading p { font-size: 10px; } .status { margin-top: 0; } .message-scroll { padding: 0 18px 22px; } .demo-notice { font-size: 9px; padding: 9px; } .message { gap: 9px; } .message-text { font-size: 13px; } .tool-steps { margin-left: 36px; } .step-detail { display: none; } .composer { margin: 6px 15px 0; } .composer-caption { padding: 10px 18px 13px; font-size: 8px; flex-wrap: wrap; justify-content: center; } .composer-caption > span:last-child { display: none; } .review-panel { top: 57px; width: min(430px, 100vw); } .home-header { padding-top: 20px; } .home-main { padding: 32px 20px 56px; } .welcome h1 { font-size: 32px; } .welcome > p { font-size: 12px; } .settings-dialog { padding: 23px; } }
 @media (max-height: 700px) { .prototype-note { display: none; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+
+.account-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+.resource-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: #1b1b1b; border: 1px solid #353535; border-radius: 18px; padding: 8px 12px; color: #ddd; font-size: 11px; cursor: pointer; }
+.resource-button:disabled { opacity: .45; cursor: default; }
+.session-row { display: flex; align-items: center; gap: 3px; }
+.session-row .session-link { flex: 1; min-width: 0; }
+.delete-session { flex-shrink: 0; }
+.file-dialog { width: min(660px, calc(100vw - 30px)); text-align: left; }
+.file-dialog .settings-heading { margin-bottom: 10px; }
+.file-section { border-top: 1px solid #303030; margin-top: 20px; padding-top: 15px; }
+.file-section h3 { font-size: 15px; font-weight: 500; }
+.file-section p { font-size: 12px; line-height: 1.7; }
+.file-row { display: flex; gap: 8px; align-items: center; padding: 12px 0; border-bottom: 1px solid #242424; }
+.file-row > span { flex: 1; min-width: 0; }
+.file-row strong { display: block; font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
+.file-row small { display: block; margin-top: 5px; color: #aaa; font-size: 10px; }
+.storage-usage { font-size: 11px; color: #aaa; margin-top: 18px; }
+.login-form { width: min(360px, calc(100vw - 40px)); display: grid; gap: 20px; text-align: left; margin-top: 20px; }
+.login-form label { display: grid; gap: 10px; font-size: 13px; }
+.login-form input { width: 100%; padding: 12px; color: #eee; background: #171717; border: 1px solid #444; border-radius: 8px; }
+.login-form .approve-button { justify-content: center; }
+@media (max-width: 720px) { .account-actions { gap: 5px; } .account-actions .resource-button { font-size: 10px; padding: 7px 8px; } .home-header { padding-left: 15px; padding-right: 15px; gap: 14px; flex-wrap: wrap; } .account-actions .model-button { display: none; } .file-dialog { padding: 20px; } .composer-context { max-width: 70%; } }

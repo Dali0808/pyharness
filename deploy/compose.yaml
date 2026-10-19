@@ -1,0 +1,59 @@
+name: lario
+services:
+  web:
+    image: ${LARIO_IMAGE:?Set an immutable LARIO_IMAGE in .env or release.env}
+    platform: linux/amd64
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      LARIO_DATA_DIR: /data
+    volumes:
+      - data:/data
+      - backups:/backups
+    expose: ["8000"]
+    read_only: true
+    tmpfs: /tmp:size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 768m
+    memswap_limit: 768m
+    cpus: 1.5
+    pids_limit: 128
+    stop_grace_period: 40s
+    healthcheck:
+      test: [CMD, python, -c, "import json,os,urllib.request; from urllib.parse import urlsplit; r=urllib.request.Request('http://127.0.0.1:8000/healthz',headers={'Host':urlsplit(os.environ['LARIO_PUBLIC_URL']).netloc}); d=json.load(urllib.request.urlopen(r,timeout=3)); assert d['status']=='ok' and d['frontend']"]
+      interval: 15s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+  caddy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    environment:
+      LARIO_DOMAIN: ${LARIO_DOMAIN:?Set LARIO_DOMAIN}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    read_only: true
+    tmpfs: /tmp:size=16m,mode=1777
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    memswap_limit: 128m
+    cpus: 0.5
+    pids_limit: 64
+    depends_on:
+      web: {condition: service_healthy}
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+volumes:
+  data:
+    name: ${LARIO_DATA_VOLUME:-lario_data}
+  backups:
+  caddy_data:
+  caddy_config:

@@ -1,6 +1,6 @@
 # pyharness 优化开发交接
 
-> 更新于 2026-10-19，Web 已接入 TUI 共用的真实任务执行入口；本次未进行收费模型或真实 Docker 试跑。Docker 命令沙箱已有用户异机基础验收。长期约束见 [AGENTS.md](AGENTS.md)；本文件只记录进度、取舍与阶段验收。开始新阶段前以当前代码为准。
+> 更新于 2026-10-20，用户反馈本机测试成功，本阶段准备提交并暂停后续开发。Web/TUI 分离、账号/文件/限额和容器交付文件已完成，服务器部署仍待验收。最新交付见 [SERVER_DEPLOYMENT_PLAN.md](SERVER_DEPLOYMENT_PLAN.md)。长期约束见 [AGENTS.md](AGENTS.md)；历史记录不代表当前能力。
 
 ## 目标与取舍
 
@@ -11,6 +11,27 @@
 保留六个阶段用于记录进度，但把“先做真实任务，再完善体验”作为顺序。每阶段只实现必需能力，验证一条成功路径和关键失败路径；影响数据或权限的边界仍按 `AGENTS.md` 处理。
 
 ## 当前进度
+
+### 2026-10-20：用户本机验收与阶段收尾
+
+- 用户执行 `lario-server create-user alice` 时，旧 `lario-web` 服务占用 `.venv/Scripts/lario-web.exe`，导致 uv 更新失败。已核对项目路径和进程树，仅停止对应旧服务；随后默认 `.venv` 的 `uv sync --locked` 成功，`uv run --locked lario-server --help` 通过，8000 端口释放。未修改运行时代码。
+- 用户随后反馈“测试成功”，要求先提交、下次继续开发。记录为用户本机验收反馈，不推断每个测试项均已执行；未提供真实模型型号、参数、成本或完整日志，不计为可复现的模型效果评测。
+- 提交范围为本轮双端能力、Web 文件与账号配额、部署维护、TUI 交付及测试文档；用户原有的 `DOCKER_SANDBOX_PLAN.md` 不纳入本次。按 AGENTS.md 由用户执行提交命令，当前尚未取得提交号。
+- 下次从服务器环境验收继续：确认域名、Docker Engine/Compose 状态，运行 CI/真实镜像，验证目标 OpenCloudOS 9 / x86_64 / 2 核 2GB 上的 HTTPS、备份恢复与更新回退。未执行远程部署或镜像发布。
+
+### 2026-10-19：Web/TUI 双端能力与服务器交付（尚未提交）
+
+- 用户确认 Web 为代码阅读、文档和文本文件助手，TUI 在本地编码；管理员建账号、数据主动删除、可配置限额、不接支付。服务器为 OpenCloudOS 9 / x86_64 / 2 核 2GB，域名与 Docker 安装状态待确认。
+- `toolsets.py` 提取现有注册；`run_task()` 接收工具集、只读根和 MemoryCore 启用开关。默认 TUI/CLI 工具顺序不变；Web 模型只读上传 documents，通过 create_artifact 新建产物，不注册 write/edit/command，不初始化共享 MemoryCore，不能加载 TUI Session 路径。
+- `files.py` 实现 UTF-8 平铺文件、独占创建、拒绝越界/符号链接/二进制/同名覆盖、单文件/数量/合计字节限制。前端新增账号登录、资料与产物面板、下载/删除、用量和会话删除，保留对话首页与深色渐变样式。
+- `accounts.py` + `server.py` 提供 SQLite 账号、scrypt 密码、有限期 HttpOnly cookie、撤销/重置、同源校验、登录限速和逐次模型请求的原子预留/结算。摘要与重试也计入额度，取消/无 usage 保留预留；不是支付账单或供应商费用硬封顶。上传有界接收并设 30 秒超时，任务准入锁限制全局并发。
+- 默认模型输出预留从 1024 提升至最多 4096 tokens（随上下文大小缩放）；降低普通长回答截断概率，仍明确报告超出输出上限，不保证无限输出。
+- 新增非 root 多阶段 Web 镜像、Compose/Caddy、健康/维护接口、CI 构建/检查/镜像发布配置、SHA 版本更新和失败回退脚本；`ops.py` 在停服状态备份文件+数据库并校验清单/摘要，恢复只能写空目录并撤销备份内登录。备份不自动加密或异地复制。
+- 文档：[部署与恢复](deploy/README.md)、[Web 操作](frontend/README.md)、[TUI 安装升级](TUI_INSTALL.md)。TUI wheel 已在独立环境安装，并从仓库外验证入口；CI 提供 wheel 构建产物。尚未发布 PyPI。
+- 最终验证：Windows Python 3.11.15 `uv run --locked pytest -q`：265 passed、13 skipped；WSL Ubuntu 24.04 / Python 3.12.3：277 passed、1 skipped；Node 24.19.0 / Edge `npm run test:e2e`：7 passed，含 TypeScript/生产构建，已检查桌面/移动端/资料截图。Compose `config --quiet`、`bash -n deploy/manage.sh`、wheel 构建安装通过。
+- 测试链路：`test_two_users_have_isolated_files_sessions_models_and_downloads` 经登录/API、各用户 WebService、共用 run_task、真实 create_artifact 验证资料/会话/产物隔离；`test_daily_request_limit_blocks_next_model_call_and_survives_restart` 经 MeteredProvider/SQLite 验证发出前拒绝及持久化；`test_backup_restore_roundtrip_accounts_usage_and_documents` 校验账号、用量、中文资料和登录失效；Linux `test_maintenance_recovers_or_persists_release` 模拟 Docker 的备份、更新、备份失败、新版失败和健康失败，验证旧服务恢复。浏览器另验证越权工具无写入和无审批入口。
+- 本机原 `.venv` 因旧服务占用 `lario-web.exe` 无法重装，未终止用户服务；验证使用 `UV_PROJECT_ENVIRONMENT=.runtime/verification-venv`，Linux 使用 `/var/tmp/pyharness-server-20261019`。用户升级前应在旧终端停止旧后端，再 sync/构建/重启，避免新页面连接旧 API。
+- 限制：当前为单进程小规模服务，最多缓存 8 个用户空间；Session 历史 32MB 为运行前准入，最后一次运行可能超额；未做容量压测。Docker 引擎未启动，镜像实际构建/运行、GitHub CI、目标服务器和域名 HTTPS 尚未验收，未调用真实模型；离线通过不代表真实模型效果或真实编码成功率。本次未提交、未发布、未改动用户的 `DOCKER_SANDBOX_PLAN.md`。
 
 ### 2026-10-19：修复本机前端依赖安装中断
 

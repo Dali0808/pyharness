@@ -46,12 +46,6 @@ from ai.schemas import (
 )
 from coding_agent.builtins import (
     Approval,
-    create_edit_file_tool,
-    create_glob_file_tool,
-    create_grep_file_tool,
-    create_list_dir_tool,
-    create_read_file_tool,
-    create_write_file_tool,
     resolve_workspace_path,
 )
 from coding_agent.session import (
@@ -65,8 +59,9 @@ from coding_agent.compaction import (
     ModelSummaryGenerator,
     RequestBudgetManager,
 )
-from coding_agent.command import CommandApproval, create_run_command_tool, format_command
+from coding_agent.command import CommandApproval, format_command
 from coding_agent.memory import MemoryCoreClient
+from coding_agent.toolsets import coding_tools, reading_tools
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a coding assistant. Work only through the available "
@@ -263,6 +258,9 @@ async def run_task(
     approve: Approval | None = None,
     approve_command: CommandApproval | None = None,
     memory: MemoryCoreClient | None = None,
+    tools: ToolRegistry | None = None,
+    read_root: Path | None = None,
+    memory_from_env: bool = True,
 ) -> TaskRunResult:
     model = ModelSpec(
         provider=config.provider_id,
@@ -284,17 +282,8 @@ async def run_task(
     models = ModelRegistry()
     models.register(model, provider)
 
-    tools = ToolRegistry()
-    approval = approve or _allow_change
-    tools.register(create_read_file_tool(config.workspace))
-    tools.register(create_write_file_tool(config.workspace, approval))
-    tools.register(create_list_dir_tool(config.workspace))
-    tools.register(create_glob_file_tool(config.workspace))
-    tools.register(create_grep_file_tool(config.workspace))
-    tools.register(create_edit_file_tool(config.workspace, approval))
-    tools.register(create_run_command_tool(
-        config.workspace, approve_command or _deny_command
-    ))
+    if tools is None:
+        tools = coding_tools(config.workspace, approve or _allow_change, approve_command or _deny_command)
 
     user_message = UserMessage(content=config.task)
     budget: RequestBudgetManager | None = None
@@ -329,7 +318,8 @@ async def run_task(
         messages=restored_messages,
     )
     try:
-        memory = memory or MemoryCoreClient.from_env()
+        if memory is None and memory_from_env:
+            memory = MemoryCoreClient.from_env()
     except ValueError as exc:
         print(f"memory disabled: {exc}", file=output)
         memory = None
@@ -374,11 +364,7 @@ async def run_task(
                 os.fsync(stream.fileno())
 
         def make_child_state() -> AgentState:
-            child_tools = ToolRegistry()
-            child_tools.register(create_read_file_tool(config.workspace))
-            child_tools.register(create_list_dir_tool(config.workspace))
-            child_tools.register(create_glob_file_tool(config.workspace))
-            child_tools.register(create_grep_file_tool(config.workspace))
+            child_tools = reading_tools(read_root or config.workspace)
             child_budget = (
                 RequestBudgetManager(
                     context_window=model.context_window,

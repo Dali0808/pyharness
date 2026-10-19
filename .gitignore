@@ -49,3 +49,6 @@ frontend/node_modules/
 frontend/.npm-cache/
 frontend/test-results/
 frontend/playwright-report/
+deploy/release.env
+deploy/release.env.tmp
+deploy/.maintenance.lock

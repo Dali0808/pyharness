@@ -1,0 +1,82 @@
+name: Checks and Web image
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  python:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with: {version: "0.12.1", python-version: "3.11"}
+      - run: uv sync --locked
+      - run: uv run --locked pytest -q
+      - run: uv build --wheel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lario-tui-${{ github.sha }}
+          path: dist/*.whl
+  browser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with: {version: "0.12.1", python-version: "3.11"}
+      - uses: actions/setup-node@v4
+        with: {node-version: "24.19.0", cache: npm, cache-dependency-path: frontend/package-lock.json}
+      - run: uv sync --locked
+      - run: npm ci
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npm run test:e2e
+        working-directory: frontend
+  image:
+    needs: [python, browser]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}:sha-$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/web.Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: ${{ steps.name.outputs.image }}
+          build-args: RELEASE=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Start image without model calls
+        run: |
+          docker run -d --name lario-check -p 127.0.0.1:18000:8000 -e LARIO_PUBLIC_URL=http://127.0.0.1:18000 -e LARIO_MODEL=offline-check -e DEEPSEEK_API_KEY=not-a-real-key '${{ steps.name.outputs.image }}'
+          for attempt in {1..30}; do
+            if curl --fail http://127.0.0.1:18000/healthz; then exit 0; fi
+            sleep 2
+          done
+          docker logs lario-check
+          exit 1
+      - name: Verify static page and protected API
+        run: |
+          curl --fail http://127.0.0.1:18000/ | grep '<div id="root">'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18000/api/state)" = 401
+      - if: always()
+        run: docker rm -f lario-check || true
+      - uses: docker/login-action@v3
+        if: github.event_name == 'push'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish checked immutable image
+        if: github.event_name == 'push'
+        run: docker push '${{ steps.name.outputs.image }}'
